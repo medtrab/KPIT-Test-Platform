@@ -32,7 +32,7 @@ import time
 from bcm_rte import ST_ERROR, PUMP_MAX_RUNTIME, PUMP_OVERCURRENT_THRESH
 
 TCP_PUMP_HOST = "0.0.0.0"
-TCP_PUMP_PORT = 5000
+TCP_PUMP_PORT = 5556
 
 
 class TCPPumpBroadcast:
@@ -92,8 +92,12 @@ class TCPPumpBroadcast:
             "state":          pump_state,
             "current":        round(rte.pump_current_a, 3),   # ACS712 canal A0
             "voltage":        round(rte.pump_voltage_v, 2),   # calcule depuis ACS712
+            "v_b":            round(rte.pump_v_b, 4),         # tension brute ADS1115
+            "v_a":            round(rte.pump_v_a, 4),         # tension calculee noeud A
             "fault":          fault,
             "fault_reason":   fault_reason,
+            "fault_mode":     rte.pump_fault_mode,            # NORMAL/OPEN LOAD/...
+            "fault_target":   rte.pump_fault_target,          # POMPE/MOTEUR
             "pump_remaining": pump_remaining,
             "pump_duration":  PUMP_MAX_RUNTIME,
             "source":         "BCM",
@@ -108,9 +112,23 @@ class TCPPumpBroadcast:
     # ─────────────────────────────────────────────────
 
     def _accept_loop(self):
+        import time as _time
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind((TCP_PUMP_HOST, TCP_PUMP_PORT))
+        try:
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except AttributeError:
+            pass
+        for attempt in range(10):
+            try:
+                srv.bind((TCP_PUMP_HOST, TCP_PUMP_PORT))
+                break
+            except OSError:
+                print(f"[TCP-PUMP] Port {TCP_PUMP_PORT} occupe, attente 1s (tentative {attempt+1}/10)...")
+                _time.sleep(1.0)
+        else:
+            print(f"[TCP-PUMP] ERREUR : port {TCP_PUMP_PORT} toujours occupe -- TCP-PUMP desactive")
+            return
         srv.listen(5)
         srv.settimeout(1.0)
         while self._running:

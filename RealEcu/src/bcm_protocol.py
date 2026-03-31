@@ -23,6 +23,8 @@ from bcm_rte import (
     LIN_PORT_CANDIDATES,
     CAN_ID_VEHICLE, CAN_ID_RAIN_SENSOR,
     CAN_RECV_TIMEOUT, CAN_IDLE_SLEEP,
+    CAN_ID_WIPER_COMMAND, CAN_ID_WIPER_STATUS,
+    CAN_WC_CMD_PERIOD,
     WOP_OFF, WOP_AUTO, WOP_REAR_WASH, WOP_REAR_WIPE, WOP_NAMES,
     ST_OFF,
 )
@@ -388,7 +390,11 @@ class ProtocolLayer:
     # ==================================================
 
     def thread_lin_scheduler(self):
-        
+        """
+        T-LIN : ordonnanceur LIN master (BCM).
+        Envoie les headers 0xD6 (400ms) et 0x97 (800ms), lit les reponses slave.
+        Les deux cycles ne se chevauchent jamais grace a l'interframe.
+        """
         t_0x16 = 0.0
         t_0x17 = 0.0
         print(f"[THREAD T-LIN] Demarre | cycle 0x16={LIN_CYCLE_0x16*1000:.0f}ms"
@@ -396,95 +402,209 @@ class ProtocolLayer:
 
         while self._running and not self._lin_stop.is_set():
             now = time.time()
+
+            # ── Cycle 0x16 (400ms) ──────────────────────────────────────
             if now - t_0x16 >= LIN_CYCLE_0x16:
-                t_0x16 = time.time()
+                t_0x16 = now
                 self._lin_poll_0x16()
+                # Interframe systematique apres chaque trame pour laisser
+                # le bus se stabiliser avant la prochaine (slave peut etre
+                # encore en train de traiter son loopback echo)
+                time.sleep(LIN_INTERFRAME)
+
+            # ── Cycle 0x17 (800ms) ──────────────────────────────────────
+            now = time.time()
             if now - t_0x17 >= LIN_CYCLE_0x17:
-                if now - t_0x16 < LIN_CYCLE_0x16:
+                # Interframe supplementaire si 0x16 vient d'etre envoye
+                # (moins de 100ms d'ecart)
+                if (now - t_0x16) < 0.100:
                     time.sleep(LIN_INTERFRAME)
                 t_0x17 = time.time()
                 self._lin_poll_0x17()
+                time.sleep(LIN_INTERFRAME)
+
             self._check_lin_timeout()
-            time.sleep(0.010)   # 10ms
+            time.sleep(0.005)   # 5ms resolution scheduler
 
     # ── Primitives LIN ────────────────────────────────
 
     def _lin_flush_all(self):
-        if self.lin_port:
-            self.lin_port.reset_input_buffer()
+        """
+        Vide le buffer RX UART completement.
+        Appele avant chaque header pour garantir qu'il n'y a pas de
+        residus de trames precedentes qui pourraient polluer la lecture.
+        """
+        if not self.lin_port:
+            return
+        self.lin_port.reset_input_buffer()
+        time.sleep(0.003)
+        # Double flush : parfois le driver USB-Serial a encore des octets
+        # dans son FIFO interne apres le premier reset
+        self.lin_port.reset_input_buffer()
 
     def _lin_send_break(self):
-        """Envoyer le BREAK LIN via baudrate/4."""
+        """
+        Envoyer le BREAK LIN via baudrate/4 (dominant >= 13 bits).
+        Strategie identique au code Arduino v7 :
+          - Passer a baud/4
+          - Envoyer un 0x00
+          - Attendre la duree exacte du break + marge USB
+          - Repasser a LIN_BAUD
+        """
         if not self.lin_port:
             return
         self.lin_port.baudrate = LIN_BAUD // 4
         self.lin_port.write(bytes([LIN_BREAK]))
         self.lin_port.flush()
-        time.sleep(13 * (1.0 / (LIN_BAUD // 4)))
+        # 13 bits @ LIN_BAUD/4 + 3ms marge USB-Serial adapter
+        time.sleep(13.0 / (LIN_BAUD // 4) + 0.003)
         self.lin_port.baudrate = LIN_BAUD
+        # Stabilisation baudrate (USB-CDC peut avoir un delai interne)
+        time.sleep(0.002)
 
     def _lin_send_header(self, pid: int):
-        """Envoyer le HEADER LIN : BREAK + SYNC(0x55) + PID."""
+        """
+        Envoyer le HEADER LIN complet : BREAK + SYNC(0x55) + PID.
+        Le flush initial garantit qu'aucun residus de trame precedente
+        ne pollue la fenetre de lecture de la reponse slave.
+        """
         if not self.lin_port:
             return
         self._lin_flush_all()
         self._lin_send_break()
         self.lin_port.write(bytes([LIN_SYNC, pid]))
         self.lin_port.flush()
+        # Pause minimale : le slave (Arduino/RPi) doit avoir le temps de
+        # decoder le PID avant de commencer a repondre.
+        # A 19200 baud : 1 octet = ~520us. SYNC+PID = ~1.04ms.
+        # On attend 3ms supplementaires = marge USB-Serial.
+        time.sleep(0.003)
 
     def _lin_read_byte(self, timeout_s: float) -> int:
-        """Lire un octet depuis le bus LIN. Retourne -1 si timeout."""
+        """
+        Lire un octet depuis le bus LIN avec timeout.
+        Retourne l'octet (0-255) ou -1 si timeout.
+        Polling court (0.3ms) pour ne pas manquer un octet rapide.
+        """
+        if timeout_s <= 0:
+            return -1
         deadline = time.time() + timeout_s
         while time.time() < deadline:
-            if self.lin_port.in_waiting:
+            if self.lin_port and self.lin_port.in_waiting:
                 return self.lin_port.read(1)[0]
-            time.sleep(0.0005)
+            time.sleep(0.0003)
         return -1
 
     def _lin_read_response(self, pid: int) -> bytes:
         """
-        Lire la reponse du slave apres envoi du header.
-        Gere l'echo loopback UART, lit 3 octets (data[0], data[1], checksum).
+        Lire la reponse du slave apres envoi du header LIN.
+
+        Architecture hardware : le BCM est MASTER LIN (half-duplex).
+        Le transceiver TJA1020 cote BCM fait un loopback UART :
+        les octets envoyes (BREAK + SYNC + PID) reapparaissent en RX.
+        Ensuite arrivent les 3 octets du slave (data[0], data[1], cs).
+
+        Strategie alignee sur le code Arduino CRS v7 (linReadHeader) :
+          1. Drainer les 0x00 du BREAK (un ou plusieurs selon baud/4)
+          2. Chercher 0x55 (SYNC) dans le flux (max 12 octets)
+          3. Verifier l'echo du PID
+          4. Lire les 3 octets de reponse slave
+          5. Flush final + pause pour laisser les derniers octets arriver
+
+        Timeout global 130ms :
+          BREAK ~2.7ms + SYNC+PID ~1ms + slave reponse ~1.6ms + USB ~5ms
+          + marge 120ms pour absorber les pics de latence USB-Serial.
+
+        Retourne b"" si la reponse est invalide ou timeout.
         """
-        BYTE_TMO  = 0.015
-        FRAME_TMO = 0.050
-        deadline  = time.time() + FRAME_TMO
+        BYTE_TMO  = 0.015    # 15ms par octet (USB-Serial P99 latency)
+        FRAME_TMO = 0.130    # 130ms total frame window
 
-        while time.time() < deadline:
-            b = self._lin_read_byte(min(BYTE_TMO, deadline - time.time()))
-            if b == LIN_BREAK:
-                break
-        else:
-            return b""
+        deadline = time.time() + FRAME_TMO
 
-        first_non_zero = -1
+        # ── Etape 1 : drainer l'echo du BREAK (0x00 consecutifs) ────────
+        # Le BREAK envoye a baud/4 est decode comme plusieurs 0x00 a 19200.
+        # On consomme tous les 0x00 jusqu'au premier octet non-nul.
+        b = -1
         while time.time() < deadline:
             b = self._lin_read_byte(min(BYTE_TMO, deadline - time.time()))
             if b < 0:
-                break
-            if b != LIN_BREAK:
-                first_non_zero = b
-                break
+                # Aucun octet recu dans le timeout global : pas de loopback
+                self._lin_flush_all()
+                return b""
+            if b != 0x00:
+                break   # Premier octet non-nul : peut etre 0x55 ou autre
 
-        if first_non_zero < 0 or first_non_zero != LIN_SYNC:
+        if b < 0:
+            self._lin_flush_all()
             return b""
 
-        b = self._lin_read_byte(BYTE_TMO)
-        if b < 0 or b != pid:
+        # ── Etape 2 : chercher l'echo du SYNC (0x55) ────────────────────
+        # L'octet non-nul peut deja etre 0x55 (cas frequent).
+        # Sinon on cherche sur les 12 prochains octets (robustesse).
+        sync_found = (b == LIN_SYNC)
+        if not sync_found:
+            for _ in range(12):
+                if time.time() >= deadline:
+                    break
+                b = self._lin_read_byte(min(BYTE_TMO, deadline - time.time()))
+                if b < 0:
+                    break
+                if b == LIN_SYNC:
+                    sync_found = True
+                    break
+                # Octet inattendu : continuer a chercher (peut etre residus)
+
+        if not sync_found:
+            self._lin_flush_all()
             return b""
 
+        # ── Etape 3 : verifier l'echo du PID ────────────────────────────
+        b = self._lin_read_byte(min(BYTE_TMO, deadline - time.time()))
+        if b < 0:
+            self._lin_flush_all()
+            return b""
+        if b != pid:
+            # PID different : residus d'une trame precedente -> flush total
+            self._lin_flush_all()
+            return b""
+
+        # ── Etape 4 : lire les 3 octets de reponse du slave ─────────────
+        # data[0] = byte0 (wiper_op | stick_status), ou fault
+        # data[1] = byte1 (alive counter), ou reserved
+        # data[2] = checksum LIN enhanced
         resp = bytearray()
-        for _ in range(3):
-            b = self._lin_read_byte(BYTE_TMO)
+        for i in range(3):
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                self._lin_flush_all()
+                return b""
+            b = self._lin_read_byte(min(BYTE_TMO, remaining))
             if b < 0:
+                # Timeout sur un octet de reponse slave
+                self._lin_flush_all()
                 return b""
             resp.append(b)
+
+        # ── Etape 5 : flush final ────────────────────────────────────────
+        # Pause 3ms pour laisser arriver les eventuels octets residuels
+        # (echo TX du slave si son transceiver a aussi un loopback),
+        # puis flush pour nettoyer avant la prochaine trame.
+        time.sleep(0.003)
+        if self.lin_port and self.lin_port.in_waiting:
+            self.lin_port.reset_input_buffer()
+
         return bytes(resp)
 
     def _lin_poll_0x16(self):
         """
-        Lecture LIN 0x16 -- commande wiper conducteur.
+        Cycle LIN 0x16 (PID=0xD6) -- LeftStickWiperRequester.
+        Le BCM envoie le header et lit la reponse du slave CRS.
         Ecrit rte.crs_wiper_op. Ne filtre pas -- T-WSM decide.
+
+        CORRECTION : t_last_lin0x16 mis a jour UNIQUEMENT sur reponse
+        valide (checksum OK). Les trames corrompues ne remettent pas
+        le timer a zero → timeout detecte correctement.
         """
         if not self.lin_port:
             return
@@ -492,13 +612,19 @@ class ProtocolLayer:
         try:
             self._lin_send_header(LIN_PID_0x16)
             resp = self._lin_read_response(LIN_PID_0x16)
+
             if len(resp) < 3:
+                # Pas de reponse slave (silence) : ne pas mettre a jour t_last
+                # Le timeout sera detecte par _check_lin_timeout()
                 return
 
             data    = resp[:2]
             rx_cs   = resp[2]
             calc_cs = lin_checksum(LIN_PID_0x16, data)
             if rx_cs != calc_cs:
+                # Checksum invalide : trame corrompue, ignorer
+                print(f"[LIN 0x16] Checksum KO rx=0x{rx_cs:02X} "
+                      f"calc=0x{calc_cs:02X} -- trame ignoree")
                 return
 
             new_op       = data[0] & 0x0F
@@ -507,7 +633,7 @@ class ProtocolLayer:
             stick_valid  = bool(stick_status & 0x01)
             old_op       = rte.crs_wiper_op
 
-            # Alive counter gele → DTC B2004
+            # Alive counter gele → DTC B2004 (slave bloque)
             if rte.crs_alive_prev != 0xFF and new_alive == rte.crs_alive_prev:
                 if not rte.lin_timeout_active:
                     print(f"[TSR_001] Alive counter gele: 0x{new_alive:02X} → B2004")
@@ -515,14 +641,16 @@ class ProtocolLayer:
                     rte.set("lin_timeout_active", True)
                 return
 
-            rte.set_multi(
-                crs_alive_prev  = new_alive,
-                crs_alive_in    = new_alive,
-                crs_stick_valid = stick_valid,
-                t_last_lin0x16  = time.time(),
-            )
-
+            # Mise a jour RTE (sous lock unique pour atomicite)
             with rte._lock:
+                rte.crs_alive_prev  = new_alive
+                # crs_alive_in peut ne pas exister dans toutes les versions RTE
+                if hasattr(rte, "crs_alive_in"):
+                    rte.crs_alive_in = new_alive
+                rte.crs_stick_valid = stick_valid
+                rte.t_last_lin0x16  = time.time()
+
+                # Appliquer la commande wiper selon ignition et stick validity
                 if rte.ignition_status == 0:
                     if new_op != WOP_OFF and rte.crs_wiper_op != WOP_OFF:
                         print(f"[LIN 0x16] Ignition OFF → "
@@ -537,6 +665,7 @@ class ProtocolLayer:
                     rte.crs_wiper_op    = WOP_OFF
                     rte._freeze_pending = False
 
+            # Retablissement communication → desactiver B2004
             if rte.lin_timeout_active:
                 print("[LIN 0x16] Communication retablie → B2004 inactif")
                 self._dtc.set_inactive("B2004")
@@ -548,9 +677,9 @@ class ProtocolLayer:
                       f"alive=0x{new_alive:02X} WSM={rte.state}")
 
         except serial.SerialTimeoutException:
+            # Write timeout USB-Serial : transitoire, pas de DTC
             print("[LIN 0x16] Write timeout UART (overhead USB) -- pas de DTC")
         except serial.SerialException as e:
-            # Vraie erreur port serie (port ferme, debranche...)
             print(f"[LIN 0x16] Erreur port serie: {e}")
             self._handle_lin_timeout()
         except Exception as e:
@@ -559,8 +688,14 @@ class ProtocolLayer:
 
     def _lin_poll_0x17(self):
         """
-        Lecture LIN 0x17 -- statut interne CRS.
-        Ecrit rte.crs_fault. Non critique pour WSM.
+        Cycle LIN 0x17 (PID=0x97) -- CRS_Status.
+        Le BCM envoie le header et lit le statut interne du slave CRS.
+        Ecrit rte.crs_fault. Non critique pour WSM (pas de DTC ici).
+
+        CORRECTION : reponse toujours attendue et traitee, meme si la
+        trame 0x17 n'a pas de role dans la logique WSM. Sans cette lecture,
+        les octets de la reponse slave resteraient dans le buffer UART et
+        pollueraient la prochaine lecture 0x16.
         """
         if not self.lin_port:
             return
@@ -569,21 +704,30 @@ class ProtocolLayer:
             self._lin_send_header(LIN_PID_0x17)
             resp = self._lin_read_response(LIN_PID_0x17)
             if len(resp) < 3:
+                # Pas de reponse slave pour 0x17 : non critique, on continue
                 return
             data  = resp[:2]
             rx_cs = resp[2]
             if lin_checksum(LIN_PID_0x17, data) != rx_cs:
+                print(f"[LIN 0x17] Checksum KO -- trame ignoree")
                 return
             old_fault = rte.crs_fault
             rte.set_multi(crs_fault=data[0], t_last_lin0x17=time.time())
             if old_fault != data[0]:
                 print(f"[LIN 0x17] CRS_InternalFault: "
                       f"0x{old_fault:02X} → 0x{data[0]:02X}")
-        except Exception:
-            pass
+        except serial.SerialTimeoutException:
+            pass   # Non critique
+        except Exception as e:
+            # Exception sur 0x17 : logguer sans declencher timeout
+            # (le timeout est gere par _check_lin_timeout via t_last_lin0x16)
+            print(f"[LIN 0x17] Exception (non critique): {e}")
 
     def _handle_lin_timeout(self):
-        """Declencher le timeout LIN → B2004 + forcer WOP_OFF dans RTE."""
+        """
+        Declencher le timeout LIN → B2004 actif + forcer WOP_OFF.
+        Idempotent : n'agit que si lin_timeout_active == False.
+        """
         rte = self._rte
         if not rte.lin_timeout_active:
             print("[LIN] TIMEOUT detecte → B2004 actif (FSR_001)")
@@ -591,10 +735,17 @@ class ProtocolLayer:
             self._dtc.set_active("B2004", rte.make_snapshot())
 
     def _check_lin_timeout(self):
-        """Verifier periodiquement si le CRS repond encore."""
+        """
+        Verifier periodiquement si le CRS repond encore.
+        Appele par thread_lin_scheduler toutes les 5ms.
+        Declenche B2004 si t_last_lin0x16 depasse LIN_TIMEOUT (2s).
+        La mise a jour de t_last_lin0x16 n'est faite QUE sur reponse
+        valide dans _lin_poll_0x16, donc un silence slave declenche bien
+        le timeout apres LIN_TIMEOUT secondes.
+        """
         rte = self._rte
         if rte.t_last_lin0x16 == 0.0:
-            return
+            return   # Pas encore de premiere trame recue
         if (time.time() - rte.t_last_lin0x16) > LIN_TIMEOUT and not rte.lin_timeout_active:
             self._handle_lin_timeout()
 
@@ -607,6 +758,7 @@ class ProtocolLayer:
         Thread T-CAN -- Recepteur CAN. Bloquant sur bus.
         ID=0x300 → Vehicle_Status  : ignition, marche arriere, vitesse
         ID=0x301 → RainSensorData  : intensite pluie, etat capteur
+        ID=0x201 → Wiper_Status    : statut retour WC (Cas B)
         """
         print("[THREAD T-CAN] Demarre")
         rte = self._rte
@@ -629,6 +781,8 @@ class ProtocolLayer:
                     self._can_process_0x300(data)
                 elif msg.arbitration_id == CAN_ID_RAIN_SENSOR:
                     self._can_process_0x301(data)
+                elif msg.arbitration_id == CAN_ID_WIPER_STATUS:
+                    self._can_process_0x201(data)
             except Exception as e:
                 print(f"[THREAD T-CAN] Exception: {e}")
 
@@ -636,6 +790,8 @@ class ProtocolLayer:
         """
         Trame CAN 0x300 -- Vehicle_Status.
         byte 0 : Ignition_Status | byte 1 : ReverseGear | byte 2-3 : VehicleSpeed
+        VehicleSpeed est encode en 0.1 km/h par bit (simulateur : speed_raw = speed_kmh * 10)
+        → diviser par 10 pour obtenir la vitesse en km/h dans le RTE.
         """
         if len(data) < 4:
             return
@@ -643,11 +799,13 @@ class ProtocolLayer:
         new_ign = data[0]
         new_rev = bool(data[1])
         now     = time.time()
+        speed_raw = (data[2] << 8) | data[3]
+        speed_kmh = round(speed_raw / 10.0, 1)   # FIX : 0.1 km/h par bit
 
         rte.set_multi(
             ignition_status = new_ign,
             reverse_gear    = new_rev,
-            vehicle_speed   = (data[2] << 8) | data[3],
+            vehicle_speed   = speed_kmh,          # FIX : km/h réels (ex: 130 → 13.0)
         )
 
         if new_ign != self._ign_pending:
@@ -703,9 +861,149 @@ class ProtocolLayer:
         if self._sensor_stable is None:
             self._sensor_stable = sensor_ok
 
-    # ==================================================
-    # SECTION D -- DoIP TCP/UDP (T-DOIP)
-    # ==================================================
+    # --------------------------------------------------
+    # CAN 0x201 -- Wiper_Status (WC → BCM, Cas B)
+    # --------------------------------------------------
+
+    def _can_process_0x201(self, data: bytes):
+        """
+        Trame CAN 0x201 -- Wiper_Status (WC → BCM, Cas B).
+        MESSAGE CATALOGUE :
+          Byte 0 : CurrentMode   Byte 1 : CurrentSpeed
+          Byte 2 : BladePosition Byte 3-4 : MotorCurrent (0.1A/bit)
+          Byte 5 : FaultStatus   Byte 6 : AliveCounter  Byte 7 : CRC
+        CRC = XOR(byte0..byte6) -- coherent avec _crc_tx() du simulateur (bcmcan.py)
+        Met a jour le RTE BCM et reset le timer de supervision B2005.
+        """
+        if len(data) < 8:                             # FIX : 8 octets requis (7 payload + 1 CRC)
+            return
+        rte = self._rte
+        if not rte.wc_available:
+            return   # Cas A : ignorer
+
+        # FIX : verification CRC XOR sur les 7 premiers octets
+        crc_calc = 0
+        for b in data[:7]:
+            crc_calc ^= b
+        crc_calc &= 0xFF
+        if crc_calc != (data[7] & 0xFF):
+            print(f"[CAN 0x201] CRC KO recu=0x{data[7]:02X} calc=0x{crc_calc:02X} -- trame ignoree")
+            return
+
+        curr_speed = data[1] & 0xFF
+        motor_curr = ((data[3] << 8) | data[4]) * 0.1   # 0.1A/bit
+        fault_st   = data[5] & 0xFF
+        is_moving  = (curr_speed > 0)
+        was_moving = rte.front_blade_moving
+        if was_moving and not is_moving:
+             rte.set("t_motor_stop", time.time())
+             print(f"[CAN 0x201] WC confirme arrêt moteur (speed={curr_speed}) -> t_motor_stop mis à jour")
+        
+        rte.set_multi(
+            front_motor_speed   = curr_speed,
+            front_blade_moving  = is_moving,
+            motor_current_a     = round(motor_curr, 3),
+            t_last_wiper_status = time.time(),
+            wc_alive_rx         = data[6] & 0xFF,
+        )
+        if fault_st != 0:
+            print(f"[CAN 0x201] WC FaultStatus=0x{fault_st:02X}")
+
+    def _build_wiper_command(self, wiper_mode: int, speed: int, wash: int) -> bytes:
+        """
+        Construit trame CAN 0x200 Wiper_Command (MESSAGE CATALOGUE) :
+          Byte 0 bits 0-3 : WiperMode   Byte 0 bits 4-7 : WiperSpeedLevel
+          Byte 1 bits 0-1 : WashRequest Byte 2 : AliveCounter  Byte 3 : CRC
+        CRC = XOR(b0, b1, b2) -- coherent avec _crc_rx() du simulateur (bcmcan.py)
+        """
+        rte = self._rte
+        rte.wc_can_alive_tx = (rte.wc_can_alive_tx + 1) % 256
+        b0  = (wiper_mode & 0x0F) | ((speed & 0x0F) << 4)
+        b1  = wash & 0x03
+        b2  = rte.wc_can_alive_tx & 0xFF
+        crc = (b0 ^ b1 ^ b2) & 0xFF          # FIX : XOR (anciennement addition)
+        return bytes([b0, b1, b2, crc, 0x00, 0x00, 0x00, 0x00])
+
+    def _can_send_wiper_command(self, data: bytes):
+        """Envoie trame CAN 0x200 vers WC."""
+        if not self.can_bus:
+            return
+        try:
+            msg = can.Message(
+                arbitration_id=CAN_ID_WIPER_COMMAND,
+                data=data, is_extended_id=False
+            )
+            self.can_bus.send(msg)
+        except Exception as e:
+            print(f"[CAN TX 0x200] Erreur: {e}")
+
+    def thread_can_wc_command(self):
+        """
+        Thread T-CAN-WC -- BCM → WC Wiper_Command 0x200 (Cas B, 20ms).
+        Actif seulement quand rte.wc_available = True.
+        Traduit l'etat WSM BCM en commande CAN vers WC.
+        """
+        from bcm_rte import (
+            WOP_OFF, WOP_TOUCH, WOP_SPEED1, WOP_SPEED2, WOP_AUTO, WOP_FRONT_WASH,
+            ST_OFF, ST_TOUCH, ST_SPEED1, ST_SPEED2, ST_AUTO,
+            ST_WASH_FRONT, ST_WASH_REAR, ST_REAR_WIPE, ST_ERROR, ST_DIAG,
+        )
+        print(f"[THREAD T-CAN-WC] Demarre | periode={CAN_WC_CMD_PERIOD*1000:.0f}ms")
+        rte = self._rte
+
+        while self._running:
+            if not rte.wc_available:
+                time.sleep(CAN_WC_CMD_PERIOD)
+                continue
+
+            state = rte.state
+
+            if state in (ST_OFF, ST_ERROR):
+                wiper_mode, speed = WOP_OFF, 0
+            elif state == ST_TOUCH:
+                wiper_mode, speed = WOP_TOUCH, 1
+            elif state == ST_SPEED1:
+                wiper_mode, speed = WOP_SPEED1, 1
+            elif state == ST_SPEED2:
+                wiper_mode, speed = WOP_SPEED2, 2
+            elif state == ST_AUTO:
+                wiper_mode, speed = WOP_AUTO, rte.front_motor_speed
+            elif state == ST_WASH_FRONT:
+                wiper_mode, speed = WOP_FRONT_WASH, 1
+            elif state == ST_WASH_REAR:
+                wiper_mode, speed = WOP_OFF, 0
+            elif state == ST_DIAG:
+                # En mode DIAG, le BCM continue d'envoyer 0x200 vers WC
+                # avec la commande du test actif (front_motor_on/speed du RTE)
+                # pour que le WC puisse executer le test moteur avant.
+                # Si aucun test actif (ou test pompe/pluie) -> WOP_OFF
+                if rte._test_active and rte.front_motor_on:
+                    wiper_mode = WOP_SPEED1 if rte.front_motor_speed == 1 else WOP_SPEED2
+                    speed      = rte.front_motor_speed
+                else:
+                    wiper_mode, speed = WOP_OFF, 0
+            else:
+                wiper_mode, speed = WOP_OFF, 0
+
+            wash = 0
+            if state == ST_WASH_FRONT and rte.pump_active and rte.pump_direction == 1:
+                wash = 1
+            elif state == ST_WASH_REAR and rte.pump_active and rte.pump_direction == 2:
+                wash = 2
+
+            frame = self._build_wiper_command(wiper_mode, speed, wash)
+            self._can_send_wiper_command(frame)
+
+            # Afficher seulement si changement
+            sig = (wiper_mode, speed, wash)
+            if sig != getattr(self, '_last_wc_cmd', None):
+                self._last_wc_cmd = sig
+                from bcm_rte import WOP_NAMES as _WOP_NAMES
+                print(f"[CAN TX 0x200] Wiper_Command: "
+                      f"mode={_WOP_NAMES.get(wiper_mode,'?')} "
+                      f"speed={speed} wash={wash}")
+
+            time.sleep(CAN_WC_CMD_PERIOD)
 
     def run(self):
         # Socket deja cree et binde dans __init__

@@ -158,7 +158,8 @@ class DTCManager:
         if snapshot:
             print(f"  ! Snapshot: WiperMode={snapshot.get('wiper_mode','?')}  "
                   f"MotorCurr={snapshot.get('motor_curr',0)}mA  "
-                  f"Rain={snapshot.get('rain',0)}")
+                  f"Rain={snapshot.get('rain',0)}  "
+                  f"VehicleSpeed={snapshot.get('vehicle_spd',0)}km/h")
         print(f"  {'!'*52}")
         print(f"")
 

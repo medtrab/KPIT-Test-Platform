@@ -21,7 +21,7 @@ FORMAT JSON envoyé :
         "fault":   false           // ST_ERROR actif
     }
 
-PORT : 5555 (TCP)
+PORT : 5000 (TCP)
 """
 
 import json
@@ -30,7 +30,7 @@ import threading
 
 
 TCP_HOST = "0.0.0.0"
-TCP_PORT = 5555
+TCP_PORT = 5000
 
 
 class TCPBroadcast:
@@ -77,6 +77,12 @@ class TCPBroadcast:
             "current": round(rte.motor_current_a, 2),
             "rest":    "PARKING" if not rte.front_blade_moving else "EN MOUVEMENT",
             "fault":   state == ST_ERROR,
+            # ── Rest contact temps réel (GPIO26) ──────────────────────────
+            # rest_contact_raw : True=GPIO1=lame EN MOUVEMENT / False=GPIO0=repos
+            "rest_contact_raw":   bool(getattr(rte, "rest_contact_raw",   False)),
+            "front_blade_cycles": int(getattr(rte, "front_blade_cycles",  0)),
+            # ── CRS fault reçu de la trame LIN 0x17 ──────────────────────
+            "crs_fault":          int(getattr(rte, "crs_fault",           0x00)),
         }
         msg = json.dumps(payload) + "\n"
         self._last_msg = msg.encode()   # sauvegarde pour nouveaux clients
@@ -87,9 +93,24 @@ class TCPBroadcast:
     # ─────────────────────────────────────────────────
 
     def _accept_loop(self):
+        import time as _time
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind((TCP_HOST, TCP_PORT))
+        try:
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except AttributeError:
+            pass
+        # Retry bind : au redemarrage rapide, le port peut etre encore en TIME_WAIT
+        for attempt in range(10):
+            try:
+                srv.bind((TCP_HOST, TCP_PORT))
+                break
+            except OSError:
+                print(f"[TCP] Port {TCP_PORT} occupe, attente 1s (tentative {attempt+1}/10)...")
+                _time.sleep(1.0)
+        else:
+            print(f"[TCP] ERREUR : port {TCP_PORT} toujours occupe apres 10s -- TCP broadcast desactive")
+            return
         srv.listen(5)
         srv.settimeout(1.0)
         while self._running:

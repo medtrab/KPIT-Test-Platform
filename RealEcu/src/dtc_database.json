@@ -10,12 +10,32 @@
             "description": "Front Motor Blocked - Overcurrent > threshold 300ms",
             "category": "electrical",
             "storage": "confirmed",
-            "status": 0,
-            "occurrence_count": 0,
-            "first_occurrence": null,
-            "last_occurrence": null,
-            "snapshot": {},
-            "snapshot_records": []
+            "status": 47,
+            "occurrence_count": 1,
+            "first_occurrence": "2026-03-31 09:17:45 BST",
+            "last_occurrence": "2026-03-31 09:17:45 BST",
+            "snapshot": {
+                "ignition": 1,
+                "wiper_mode": "OFF",
+                "motor_curr": 0,
+                "blade_pos": 0,
+                "rain": 0,
+                "vehicle_spd": 0
+            },
+            "snapshot_records": [
+                {
+                    "record_number": 1,
+                    "timestamp": "2026-03-31 09:17:45 BST",
+                    "data": {
+                        "F190_ignition": 1,
+                        "F191_wiper_mode": "OFF",
+                        "F192_motor_curr": 0,
+                        "F193_blade_pos": 0,
+                        "F194_rain": 0,
+                        "F195_vehicle_spd": 0
+                    }
+                }
+            ]
         },
         "B2002": {
             "bytes": [
