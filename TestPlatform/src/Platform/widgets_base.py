@@ -97,8 +97,11 @@ class StatusLed(QWidget):
         self.setFixedSize(size, size)
 
     def set_state(self, on: bool, color: str | None = None) -> None:
+        new_color = QColor(color) if color else QColor(A_GREEN if on else A_RED)
+        if self._on == on and self._color == new_color:
+            return   # rien n'a changé → pas de repaint inutile
         self._on    = on
-        self._color = QColor(color) if color else QColor(A_GREEN if on else A_RED)
+        self._color = new_color
         self.update()
 
     def paintEvent(self, _) -> None:
@@ -214,6 +217,9 @@ class NumericDisplay(QWidget):
             f"background:{W_PANEL3};border:1px solid {W_BORDER};border-radius:2px;")
 
     def set_value(self, val_str: str, color: str | None = None) -> None:
+        new_color = color or self._color
+        if self._val == val_str and new_color == self._color:
+            return   # rien n'a changé → pas de repaint inutile
         self._val = val_str
         if color:
             self._color = color
@@ -267,6 +273,8 @@ class LinearBar(QWidget):
         self.setStyleSheet("background:transparent;")
 
     def set_value(self, v: float, fault: bool = False) -> None:
+        if self._val == v and self._fault == fault:
+            return   # rien n'a changé → pas de repaint inutile
         self._val   = v
         self._fault = fault
         self.update()

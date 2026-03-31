@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""
+wc_dtc_manager.py
+=================
+DTC Manager du WC ECU -- WipeWash System (Cas B)
+Integre dans rpisimulator6 (RPi #2).
+
+DTC WC :
+  B2101 : WC Internal Failure
+  B2102 : WC Motor Driver Fault
+  B2103 : WC Position Sensor Fault
+
+Adresse diagnostique WC : 0x701
+"""
+
+import json
+import os
+from datetime import datetime
+
+# =====================================================
+# STATUS BYTE
+# =====================================================
+STATUS_CLEAN              = 0x00
+STATUS_ACTIVE             = 0x2F
+STATUS_INACTIVE           = 0x2E
+STATUS_AVAILABILITY_MASK  = 0xFF
+
+BIT_TEST_FAILED        = 0x01
+BIT_FAILED_THIS_CYCLE  = 0x02
+BIT_PENDING            = 0x04
+BIT_CONFIRMED          = 0x08
+BIT_NOT_COMPLETED      = 0x10
+BIT_FAILED_SINCE_CLEAR = 0x20
+BIT_WARNING_INDICATOR  = 0x40
+BIT_NOT_SINCE_CLEAR    = 0x80
+
+SNAP_DID_IGNITION    = 0xF190
+SNAP_DID_WIPER_MODE  = 0xF191
+SNAP_DID_MOTOR_CURR  = 0xF192
+SNAP_DID_BLADE_POS   = 0xF193
+SNAP_DID_RAIN_INTENS = 0xF194
+SNAP_DID_VEHICLE_SPD = 0xF195
+
+MAX_SNAPSHOT_RECORDS = 5
+
+DTC_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wc_dtc_database.json")
+
+
+# =====================================================
+# DTC MANAGER WC
+# =====================================================
+class DTCManager_WC:
+    def __init__(self, filepath=DTC_FILE):
+        self.filepath = filepath
+        self._load()
+        print(f"[WC-DTC] Manager loaded - {len(self.dtcs)} DTCs in database")
+
+    def _load(self):
+        with open(self.filepath, "r") as f:
+            self.db = json.load(f)
+        self.dtcs = self.db["dtcs"]
+
+    def _save(self):
+        with open(self.filepath, "w") as f:
+            json.dump(self.db, f, indent=4)
+
+    def _now(self) -> str:
+        return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    def set_active(self, code: str, snapshot: dict = None):
+        if code not in self.dtcs:
+            print(f"[WC-DTC] Unknown DTC: {code}")
+            return
+        dtc = self.dtcs[code]
+        now = self._now()
+        is_new = dtc["first_occurrence"] is None
+
+        dtc["status"]           = STATUS_ACTIVE
+        dtc["occurrence_count"] += 1
+        dtc["last_occurrence"]  = now
+        if is_new:
+            dtc["first_occurrence"] = now
+
+        if snapshot:
+            dtc["snapshot"] = snapshot
+            existing = dtc.get("snapshot_records", [])
+            last_num = existing[-1]["record_number"] if existing else 0
+            next_num = (last_num % 255) + 1
+
+            record = {
+                "record_number": next_num,
+                "timestamp": now,
+                "data": {
+                    "F190_ignition":    snapshot.get("ignition", 1),
+                    "F191_wiper_mode":  snapshot.get("wiper_mode", "UNKNOWN"),
+                    "F192_motor_curr":  snapshot.get("motor_curr", 0),
+                    "F193_blade_pos":   snapshot.get("blade_pos", 0),
+                    "F194_rain":        snapshot.get("rain", 0),
+                    "F195_vehicle_spd": snapshot.get("vehicle_spd", 0),
+                }
+            }
+            existing.append(record)
+            if len(existing) > MAX_SNAPSHOT_RECORDS:
+                existing = existing[-MAX_SNAPSHOT_RECORDS:]
+            dtc["snapshot_records"] = existing
+
+        self._save()
+
+        b = dtc["bytes"]
+        hex_code = f"{b[0]:02X}{b[1]:02X}{b[2]:02X}"
+        print(f"")
+        print(f"{'!'*54}")
+        print(f"! [WC] DTC ACTIVE  {code} [{hex_code}]")
+        print(f"! {dtc['description']}")
+        print(f"! Status: 0x{STATUS_ACTIVE:02X}  Occurrence: #{dtc['occurrence_count']}")
+        if snapshot:
+            print(f"! Snapshot: WiperMode={snapshot.get('wiper_mode','?')}  "
+                  f"MotorCurr={snapshot.get('motor_curr',0)}mA")
+        print(f"{'!'*54}")
+        print(f"")
+
+    def set_inactive(self, code: str):
+        if code not in self.dtcs:
+            return
+        dtc = self.dtcs[code]
+        if dtc["status"] == STATUS_ACTIVE:
+            dtc["status"] = STATUS_INACTIVE
+            self._save()
+            b = dtc["bytes"]
+            hex_code = f"{b[0]:02X}{b[1]:02X}{b[2]:02X}"
+            print(f"  [WC-DTC INACTIVE] {code} [{hex_code}] - {dtc['description']}")
+
+    def clear_all(self):
+        for code in self.dtcs:
+            self.dtcs[code]["status"]           = STATUS_CLEAN
+            self.dtcs[code]["occurrence_count"] = 0
+            self.dtcs[code]["first_occurrence"] = None
+            self.dtcs[code]["last_occurrence"]  = None
+            self.dtcs[code]["snapshot"]         = {}
+            self.dtcs[code]["snapshot_records"] = []
+        self._save()
+        now = self._now()
+        print(f"")
+        print(f"  {'='*52}")
+        print(f"  = [WC] DTC CLEARED - {len(self.dtcs)} DTCs reset to CLEAN (0x00)")
+        print(f"  = Cleared at: {now}")
+        print(f"  {'='*52}")
+        print(f"")
+
+    def get_dtcs_by_mask(self, mask: int) -> list:
+        result = []
+        for code, dtc in self.dtcs.items():
+            status = dtc["status"]
+            if mask == 0xFF:
+                if status != STATUS_CLEAN:
+                    result.append((bytes(dtc["bytes"]), status))
+            else:
+                if (status & mask) != 0:
+                    result.append((bytes(dtc["bytes"]), status))
+        return result
+
+    def get_all_supported(self) -> list:
+        return [(bytes(dtc["bytes"]), dtc["status"]) for dtc in self.dtcs.values()]
+
+    def build_response_02(self, mask: int) -> bytes:
+        dtc_list = self.get_dtcs_by_mask(mask)
+        resp = bytes([0x59, 0x02, STATUS_AVAILABILITY_MASK])
+        for dtc_bytes, status in dtc_list:
+            resp += dtc_bytes + bytes([status])
+        return resp
+
+    def build_response_04(self, dtc_bytes_target: bytes, record_number: int) -> bytes:
+        target = None
+        for code, dtc in self.dtcs.items():
+            if bytes(dtc["bytes"]) == dtc_bytes_target:
+                target = dtc
+                break
+        if target is None:
+            return bytes([0x7F, 0x19, 0x31])
+
+        records = target.get("snapshot_records", [])
+        if record_number != 0xFF:
+            records = [r for r in records if r["record_number"] == record_number]
+
+        resp = bytes([0x59, 0x04]) + dtc_bytes_target + bytes([target["status"]])
+
+        if not records:
+            resp += bytes([0xFF])
+            return resp
+
+        for rec in records:
+            resp += bytes([rec["record_number"] & 0xFF])
+            d = rec["data"]
+            resp += bytes([0xF1, 0x90, 0x01, d["F190_ignition"] & 0xFF])
+            mode_bytes = d["F191_wiper_mode"].encode("ascii")[:10].ljust(10, b"\x00")
+            resp += bytes([0xF1, 0x91, 0x0A]) + mode_bytes
+            curr = d["F192_motor_curr"]
+            resp += bytes([0xF1, 0x92, 0x02, (curr >> 8) & 0xFF, curr & 0xFF])
+            resp += bytes([0xF1, 0x93, 0x01, d["F193_blade_pos"] & 0xFF])
+            resp += bytes([0xF1, 0x94, 0x01, d["F194_rain"] & 0xFF])
+            spd = d["F195_vehicle_spd"]
+            resp += bytes([0xF1, 0x95, 0x02, (spd >> 8) & 0xFF, spd & 0xFF])
+
+        return resp
+
+    def build_response_06(self, dtc_bytes_target: bytes) -> bytes:
+        target = None
+        for code, dtc in self.dtcs.items():
+            if bytes(dtc["bytes"]) == dtc_bytes_target:
+                target = dtc
+                break
+        if target is None:
+            return bytes([0x7F, 0x19, 0x31])
+        resp = bytes([0x59, 0x06]) + dtc_bytes_target + bytes([target["status"]])
+        occ = target["occurrence_count"]
+        resp += bytes([0x01, 0x02, (occ >> 8) & 0xFF, occ & 0xFF])
+        return resp
+
+    def print_all(self):
+        print(f"\n{'='*56}")
+        print(f"  [WC] DTC DATABASE ({len(self.dtcs)} entries)")
+        print(f"{'='*56}")
+        for code, dtc in self.dtcs.items():
+            s = dtc["status"]
+            if s == STATUS_ACTIVE:
+                label = "ACTIVE   (0x2F)"
+            elif s == STATUS_INACTIVE:
+                label = "INACTIVE (0x2E)"
+            else:
+                label = "CLEAN    (0x00)"
+            print(f"  {code} | {label} | #{dtc['occurrence_count']}")
+            print(f"       {dtc['description']}")
+        print(f"{'='*56}\n")
+
+
+# =====================================================
+# UDS 0x19 HANDLER WC
+# =====================================================
+def handle_read_dtc(dtc_mgr: DTCManager_WC, uds: bytes) -> bytes:
+    if len(uds) < 2:
+        return bytes([0x7F, 0x19, 0x13])
+    subfunc = uds[1]
+
+    if subfunc == 0x02:
+        mask = uds[2] if len(uds) >= 3 else 0xFF
+        dtc_list = dtc_mgr.get_dtcs_by_mask(mask)
+        print(f"  [WC UDS 0x19 0x02] mask=0x{mask:02X} - {len(dtc_list)} DTC(s)")
+        return dtc_mgr.build_response_02(mask)
+
+    elif subfunc == 0x04:
+        if len(uds) < 5:
+            return bytes([0x7F, 0x19, 0x13])
+        dtc_b   = bytes(uds[2:5])
+        rec_num = uds[5] if len(uds) >= 6 else 0xFF
+        return dtc_mgr.build_response_04(dtc_b, rec_num)
+
+    elif subfunc == 0x06:
+        if len(uds) < 5:
+            return bytes([0x7F, 0x19, 0x13])
+        dtc_b = bytes(uds[2:5])
+        return dtc_mgr.build_response_06(dtc_b)
+
+    else:
+        return bytes([0x7F, 0x19, 0x12])
+
+
+# =====================================================
+# UDS 0x14 HANDLER WC
+# =====================================================
+def handle_clear_dtc(dtc_mgr: DTCManager_WC, uds: bytes) -> bytes:
+    if len(uds) < 4:
+        return bytes([0x7F, 0x14, 0x13])
+    group = (uds[1] << 16) | (uds[2] << 8) | uds[3]
+    print(f"  [WC UDS 0x14] Clear DTC group=0x{group:06X}")
+    if group == 0xFFFFFF:
+        dtc_mgr.clear_all()
+        return bytes([0x54])
+    for code, dtc in dtc_mgr.dtcs.items():
+        b = dtc["bytes"]
+        if (b[0] << 16 | b[1] << 8 | b[2]) == group:
+            dtc["status"] = 0x00
+            dtc["occurrence_count"] = 0
+            dtc["snapshot_records"] = []
+            dtc_mgr._save()
+            print(f"  [WC-DTC] Cleared {code}")
+            return bytes([0x54])
+    return bytes([0x7F, 0x14, 0x31])

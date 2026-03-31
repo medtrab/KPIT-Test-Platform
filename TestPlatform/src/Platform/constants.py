@@ -6,10 +6,22 @@ Ports, palette, opérations wiper, polices.
 # ═══════════════════════════════════════════════════════════
 #  PORTS
 # ═══════════════════════════════════════════════════════════
-PORT_MOTOR   = 5000   # Moteurs rx + Vehicle/Rain/Wiper tx
+PORT_MOTOR   = 5000   # RPiBCM : état moteur rx (bcm_tcp_broadcast)
+PORT_BCMCAN  = 5002   # RPiSIM  : vehicle/rain/wiper tx vers bcmcan
 PORT_LIN     = 5555   # LIN events rx
 PORT_PUMP_RX = 5556   # Pompe données rx
 PORT_PUMP_TX = 5001   # Pompe commandes tx
+PORT_CAN     = 5557   # CAN frame events rx (bcmcan TCP broadcast)
+
+# ═══════════════════════════════════════════════════════════════
+#  CAN IDs / COULEURS
+# ═══════════════════════════════════════════════════════════════
+CAN_CMD_C    = "#1A4E8E"   # 0x200 Wiper_Cmd     (RX → bus)  bleu foncé
+CAN_STA_C    = "#1A6E1A"   # 0x201 Wiper_Status  (TX ← bus) vert foncé
+CAN_ACK_C    = "#8B4513"   # 0x202 Wiper_Ack     (TX WC→BCM) brun
+CAN_VEH_C    = "#007ACC"   # 0x300 Vehicle_Status           bleu vif
+CAN_RAIN_C   = "#D35400"   # 0x301 RainSensorData           orange
+CAN_GRID     = "#D8DADC"
 
 # ═══════════════════════════════════════════════════════════
 #  PALETTE  ControlDesk gris clair

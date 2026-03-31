@@ -36,7 +36,7 @@ class PumpWidget(QWidget):
         self._flow_offset = 0.0
         self._t = QTimer()
         self._t.timeout.connect(self._tick)
-        self._t.start(30)
+        self._t.start(60)  # Optimisation: 60ms = ~16 FPS (au lieu de 30ms)
         self.setMinimumSize(220, 180)
 
     def set_state(self, state: str, current: float = 0.0, fault: bool = False) -> None:
@@ -54,6 +54,8 @@ class PumpWidget(QWidget):
         else:
             if abs(self._angle % 360) > 2:
                 self._angle = (self._angle + 1) % 360
+            else:
+                return   # rien n'a changé, pas de repaint inutile
         self.update()
 
     def paintEvent(self, _) -> None:
@@ -172,7 +174,7 @@ class MotorWidget(QWidget):
         self._angle = 0.0
         self._t = QTimer()
         self._t.timeout.connect(self._tick)
-        self._t.start(25)
+        self._t.start(60)  # Optimisation: 60ms = ~16 FPS (au lieu de 25ms)
         self.setMinimumSize(190, 180)
 
     def set_state(self, state: str, speed: str = "Speed1") -> None:
@@ -187,6 +189,7 @@ class MotorWidget(QWidget):
         elif self._angle % 360 > 2:
             self._angle = (self._angle + 0.8) % 360
             self.update()
+        # else: rien n'a bougé, pas de repaint inutile
 
     def paintEvent(self, _) -> None:
         p = QPainter(self)
@@ -291,43 +294,100 @@ class MotorWidget(QWidget):
 #  ESSUIE-GLACE (vue parebrise)
 # ═══════════════════════════════════════════════════════════
 class WindshieldWidget(QWidget):
+    """
+    Vue pare-brise temps réel synchronisée avec le BCM.
+
+    Sources de vérité (set_bcm_state) :
+      - front_motor_on    : True  = lame en mouvement (BCM actionne RL2)
+      - rest_contact_raw  : True  = GPIO=1 = lame EN MOUVEMENT
+                            False = GPIO=0 = lame AU REPOS (position repos)
+      - front_blade_cycles: compteur cycles lame (incrémenté par _track_blade_cycle)
+      - bcm_state         : état WSM (OFF/SPEED1/SPEED2/TOUCH/AUTO/WASH_FRONT/...)
+      - op                : WiperOp courant (pour couleur + label)
+
+    Logique d'animation :
+      - Si front_motor_on=True  → lame animée (mouvement continu)
+      - Si front_motor_on=False → lame retourne en position repos (angle=-60)
+      - rest_contact_raw=False (repos) → lame dessinée en vert (position repos confirmée)
+      - rest_contact_raw=True  (mouvement) → lame dessinée en couleur WOP active
+    """
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._op    = 0
-        self._angle = -60.0
-        self._dir   = 1
+        self._op              = 0
+        self._angle           = -60.0
+        self._dir             = 1
+        self._front_motor_on  = False
+        self._rest_contact    = False   # True=GPIO1=lame bouge / False=GPIO0=repos
+        self._blade_cycles    = 0
+        self._bcm_state       = "OFF"
+        self._returning       = False   # True = lame en retour vers repos (motor_on→False)
+
         self._t = QTimer()
         self._t.timeout.connect(self._tick)
+        self._t.start(20)               # 50 Hz — animation fluide
         self.setMinimumSize(280, 160)
 
+    # ── API publique ──────────────────────────────────────────────────
+
     def set_op(self, op: int) -> None:
+        """Appelé par le sélecteur manuel — mise à jour op uniquement."""
         self._op = op
-        spds = {0: 0, 1: 22, 2: 16, 3: 8, 4: 13, 5: 16, 6: 0, 7: 22}
-        iv = spds.get(op, 0)
-        if iv > 0:
-            self._t.start(iv)
-        else:
-            self._t.stop()
-            if op == 0:
-                self._angle = -60.0
-                self.update()
+
+    def set_bcm_state(self, front_motor_on: bool, rest_contact_raw: bool,
+                      blade_cycles: int, bcm_state: str, op: int) -> None:
+        """
+        Mise à jour depuis les données temps réel du BCM.
+        Appelé à chaque réception TCP/Redis (200ms).
+        """
+        prev_motor = self._front_motor_on
+        self._front_motor_on = front_motor_on
+        self._rest_contact   = rest_contact_raw
+        self._blade_cycles   = blade_cycles
+        self._bcm_state      = bcm_state
+        self._op             = op
+
+        # Moteur vient de s'arrêter → déclencher retour repos
+        if prev_motor and not front_motor_on:
+            self._returning = True
+
+    # ── Tick animation ────────────────────────────────────────────────
 
     def _tick(self) -> None:
-        s = {1: 3.2, 2: 2.2, 3: 5.0, 4: 2.8, 5: 2.2, 7: 3.2}.get(self._op, 2.5)
-        self._angle += s * self._dir
-        if self._angle >= 60:
-            self._angle = 60; self._dir = -1
-            if self._op in (1, 7):
-                QTimer.singleShot(400, lambda: self.set_op(0))
-        elif self._angle <= -60:
-            self._angle = -60; self._dir = 1
+        if self._front_motor_on:
+            # Lame en mouvement : animation continue selon vitesse état BCM
+            self._returning = False
+            spd = {
+                "SPEED1":      1.8,
+                "SPEED2":      3.5,
+                "TOUCH":       2.0,
+                "AUTO":        2.2,
+                "WASH_FRONT":  2.0,
+            }.get(self._bcm_state, 2.0)
+
+            self._angle += spd * self._dir
+            if self._angle >= 60:
+                self._angle = 60.0; self._dir = -1
+            elif self._angle <= -60:
+                self._angle = -60.0; self._dir = 1
+
+        elif self._returning:
+            # Moteur arrêté → retour progressif en position repos (-60°)
+            if self._angle > -60.0:
+                self._angle = max(-60.0, self._angle - 3.0)
+            else:
+                self._angle   = -60.0
+                self._returning = False
+
         self.update()
+
+    # ── Dessin ────────────────────────────────────────────────────────
 
     def paintEvent(self, _) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         W, H = self.width(), self.height()
 
+        # Carrosserie / contour pare-brise
         path = QPainterPath()
         path.moveTo(W * 0.08, H * 0.95)
         path.quadTo(W * 0.03, H * 0.02, W * 0.18, H * 0.05)
@@ -343,34 +403,65 @@ class WindshieldWidget(QWidget):
         p.drawPath(path)
 
         cx = W // 2; cy = int(H * 0.94); R = int(H * 0.82)
-        sw_c = QColor(A_GREEN if self._op > 0 else "#B0B3B5")
+
+        # Zone de balayage
+        sw_c = QColor(A_GREEN if self._front_motor_on else "#B0B3B5")
         sw_c.setAlpha(25)
         p.setBrush(QBrush(sw_c)); p.setPen(Qt.PenStyle.NoPen)
         p.drawPie(QRectF(cx - R, cy - R, R * 2, R * 2),
                   int((-60 + 90) * 16), int(-120 * 16))
 
+        # Couleur lame selon rest contact
+        # rest_contact=False (GPIO=0) = lame AU REPOS → vert
+        # rest_contact=True  (GPIO=1) = lame EN MOUVEMENT → couleur WOP
+        if not self._front_motor_on and not self._rest_contact:
+            wiper_c = QColor(A_GREEN)    # repos confirmé par hardware
+        elif self._front_motor_on:
+            wiper_c = QColor(WOP[self._op]["color"]) if self._op > 0 else QColor("#E0A000")
+        else:
+            wiper_c = QColor("#888888")  # arrêté mais rest contact pas encore confirmé
+
         ang_r = math.radians(self._angle - 90)
         ex = cx + R * math.cos(ang_r); ey = cy + R * math.sin(ang_r)
-        wiper_c = QColor(WOP[self._op]["color"]) if self._op > 0 else QColor("#555555")
 
+        # Ombre bras
         p.setPen(QPen(QColor(0, 0, 0, 30), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         p.drawLine(cx + 2, cy + 2, int(ex + 2), int(ey + 2))
+        # Bras
         p.setPen(QPen(QColor("#505050"), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         p.drawLine(cx, cy, int(ex), int(ey))
-
+        # Lame
         perp = math.radians(self._angle - 90 + 90); bl = 32
         bx1 = ex + bl * math.cos(perp); by1 = ey + bl * math.sin(perp)
         bx2 = ex - bl * math.cos(perp); by2 = ey - bl * math.sin(perp)
         p.setPen(QPen(wiper_c, 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         p.drawLine(int(bx1), int(by1), int(bx2), int(by2))
+
+        # Point pivot
         p.setBrush(QBrush(QColor("#303030"))); p.setPen(QPen(QColor("#1A1A1A"), 1.5))
         p.drawEllipse(cx - 5, cy - 5, 10, 10)
 
-        if self._op > 0:
+        # Indicateur rest contact (petit point coin bas-gauche)
+        rc_color = QColor(A_GREEN) if not self._rest_contact else QColor(A_AMBER)
+        p.setBrush(QBrush(rc_color)); p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(6, H - 16, 10, 10)
+        p.setFont(QFont(FONT_MONO, 8))
+        p.setPen(QPen(QColor(W_TEXT_DIM)))
+        p.drawText(20, H - 16, 60, 12, Qt.AlignmentFlag.AlignLeft, "REST")
+
+        # Compteur cycles (coin bas-droit)
+        p.setFont(QFont(FONT_MONO, 8, QFont.Weight.Bold))
+        p.setPen(QPen(QColor(A_TEAL2)))
+        p.drawText(W - 70, H - 16, 66, 12,
+                   Qt.AlignmentFlag.AlignRight, f"#{self._blade_cycles}")
+
+        # Label état BCM (centré en bas)
+        if self._bcm_state not in ("OFF", ""):
+            lbl_c = QColor(WOP[self._op]["color"]) if self._op > 0 else QColor(W_TEXT_DIM)
             p.setFont(QFont(FONT_UI, 10, QFont.Weight.Bold))
-            p.setPen(QPen(wiper_c))
+            p.setPen(QPen(lbl_c))
             p.drawText(4, H - 18, W - 8, 16, Qt.AlignmentFlag.AlignCenter,
-                       WOP[self._op]["label"])
+                       self._bcm_state)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -404,7 +495,7 @@ class CarTopViewWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setMouseTracking(True)
-        self._t = QTimer(); self._t.timeout.connect(self._tick); self._t.start(28)
+        self._t = QTimer(); self._t.timeout.connect(self._tick); self._t.start(60)  # Optimisation: 60ms = ~16 FPS (au lieu de 28ms)
 
     # ── Setters ──────────────────────────────────────────────
     def set_ignition(self, s: str)  -> None: self._ign     = s

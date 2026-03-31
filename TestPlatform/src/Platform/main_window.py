@@ -1,14 +1,24 @@
 """
 WipeWash — Fenêtre principale
-MainWindow (QDockWidget) + NetworkScanDialog.
+MainWindow (3 onglets : Motor/Pompe | LIN/CRS | CAN/Vehicle) + NetworkScanDialog.
+
+MODIFICATION v2 :
+  _make_runner() passe pump_signal=self._pump_signal à TestRunner.
+
+OPTIMISATIONS :
+  - Architecture 3 pages QTabWidget au lieu de 6 docks flottants → moins de
+    widgets rendus simultanément.
+  - Oscilloscopes LIN et CAN mis en pause sur les onglets cachés (timer.stop/start).
+  - DOCK_STYLE supprimé (inutile).
+  - _set_tb_status : dict PORT→name pré-calculé en attribut de classe.
 """
 
 import datetime
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QFrame, QLabel, QPushButton, QToolBar, QStatusBar,
-    QDockWidget, QMenuBar, QMenu, QDialog, QMessageBox,
+    QFrame, QLabel, QToolBar, QStatusBar,
+    QTabWidget, QSplitter, QMenu, QDialog, QMessageBox,
     QProgressBar, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
@@ -22,16 +32,23 @@ from constants import (
     A_TEAL, A_TEAL2, A_GREEN, A_RED, A_ORANGE,
     PORT_MOTOR, PORT_LIN, PORT_PUMP_RX,
 )
+try:
+    from constants import PORT_CAN, CAN_VEH_C
+except ImportError:
+    PORT_CAN  = 5557
+    CAN_VEH_C = "#007ACC"
 from network  import scan_async
 from workers  import (
-    MotorVehicleWorker, LINWorker, PumpSignal, PumpDataClient,
+    MotorVehicleWorker, LINWorker, PumpSignal, PumpDataClient, CANWorker,
 )
 from widgets_base import StatusLed, _lbl, _hsep, _cd_btn
 from panels import (
-    MotorDashPanel, PumpPanel, VehicleRainPanel, CRSLINPanel,
+    MotorDashPanel, PumpPanel, VehicleRainPanel, CRSLINPanel, CANBusPanel,
 )
-
-from PyQt6.QtCore import QThread
+from auto_test_panel import AutoTestPanel
+from test_runner     import TestRunner
+from rte_client      import RTEClient
+from PyQt6.QtCore    import QThread
 
 
 # ═══════════════════════════════════════════════════════════
@@ -140,32 +157,16 @@ class NetworkScanDialog(QDialog):
 
 
 # ═══════════════════════════════════════════════════════════
-#  DOCK STYLE
-# ═══════════════════════════════════════════════════════════
-DOCK_STYLE = f"""
-    QDockWidget {{
-        font-family: {FONT_UI}; font-size: 10pt;
-        font-weight: bold; color: {W_DOCK_HDR};
-    }}
-    QDockWidget::title {{
-        background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-            stop:0 {W_DOCK_HDR}, stop:1 #2A2C2E);
-        padding: 5px 10px; text-align: left;
-        color: #FAFAFA; border-bottom: 2px solid {A_TEAL};
-    }}
-    QDockWidget::close-button, QDockWidget::float-button {{
-        background: transparent; padding: 2px;
-        border: none; border-radius: 2px;
-    }}
-    QDockWidget::close-button:hover, QDockWidget::float-button:hover {{
-        background: rgba(255,255,255,0.15);
-    }}
-"""
-
-
-# ═══════════════════════════════════════════════════════════
 #  MAIN WINDOW
 # ═══════════════════════════════════════════════════════════
+_PORT_NAMES = {
+    PORT_MOTOR:   "Motors",
+    PORT_LIN:     "LIN",
+    PORT_PUMP_RX: "Pump",
+    PORT_CAN:     "CAN",
+}
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -182,52 +183,105 @@ class MainWindow(QMainWindow):
         self._pump_signal = PumpSignal()
         self._pump_client = PumpDataClient(self._pump_signal)
 
+        self._can_worker  = CANWorker()
+        self._can_thread  = QThread()
+        self._can_worker.moveToThread(self._can_thread)
+        self._can_thread.started.connect(self._can_worker.run)
+
+        # Client Redis — connecté au RpiBCM (host résolu après connexion)
+        self._rte_client: RTEClient | None = None
+
         self._build_ui()
         self._connect_signals()
 
         self._motor_thread.start()
         self._lin_thread.start()
         self._pump_client.start()
+        self._can_thread.start()
 
     # ── Construction UI ──────────────────────────────────────
     def _build_ui(self) -> None:
         self.setWindowTitle("WipeWash  —  HIL Test Bench  |  Wipe & Wash System")
         self.setMinimumSize(1100, 720); self.resize(1440, 900)
-        self.setStyleSheet(f"""
-            QMainWindow {{ background:{W_BG}; }}
-            QMainWindow::separator {{ background:{W_BORDER};width:4px;height:4px; }}
-            QMainWindow::separator:hover {{ background:{A_TEAL}; }}
-            {DOCK_STYLE}
-        """)
+        self.setStyleSheet(f"QMainWindow {{ background:{W_BG}; }}")
 
         self._build_menubar()
         self._build_toolbar()
 
-        self.setDockOptions(
-            QMainWindow.DockOption.AllowNestedDocks
-            | QMainWindow.DockOption.AllowTabbedDocks
-            | QMainWindow.DockOption.AnimatedDocks)
-
+        # ── Panneaux ─────────────────────────────────────────
         self._motor_panel  = MotorDashPanel()
-        self._pump_panel   = PumpPanel(lambda: self._pump_client)
+        self._pump_panel   = PumpPanel(
+            lambda: self._pump_client,
+            rte_getter=lambda: self._rte_client,
+        )
         self._veh_panel    = VehicleRainPanel(lambda: self._motor_worker)
-        self._crslin_panel = CRSLINPanel(wiper_setter=self._motor_worker.set_wiper_op)
+        self._crslin_panel = CRSLINPanel(
+            wiper_setter=self._lin_worker.set_wiper_op,
+            lin_sender=self._lin_worker.queue_send,
+        )
+        self._can_panel    = CANBusPanel()
 
-        dock_m = self._make_dock("Motor Dashboard  —  Wiper System",  self._motor_panel)
-        dock_p = self._make_dock("Pump Monitor  —  Hydraulic System", self._pump_panel)
-        dock_v = self._make_dock("Vehicle Status  &  Rain Sensor",     self._veh_panel)
-        dock_c = self._make_dock("CRS Wiper Control  /  LIN Bus Monitor", self._crslin_panel)
+        def _make_runner():
+            return TestRunner(
+                self._can_worker,
+                self._lin_worker,
+                self._motor_worker,
+                pump_signal=self._pump_signal,
+                rte_client=self._rte_client,
+            )
+        self._auto_test_panel = AutoTestPanel(runner_factory=_make_runner)
 
-        self.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea,    dock_m)
-        self.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea,    dock_p)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock_v)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock_c)
+        # ── QTabWidget central — 4 pages ─────────────────────
+        self._tabs = QTabWidget()
+        self._tabs.setDocumentMode(True)
+        self._tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border:none; background:{W_BG}; }}
+            QTabBar {{ background:{W_TOOLBAR}; border-bottom:2px solid {A_TEAL}; }}
+            QTabBar::tab {{
+                background:{W_TOOLBAR}; color:{W_TEXT_DIM}; border:none;
+                border-right:1px solid {W_BORDER};
+                padding:8px 26px;
+                font-family:{FONT_UI}; font-size:11pt; font-weight:bold;
+                min-width:160px;
+            }}
+            QTabBar::tab:selected {{
+                background:{W_BG}; color:{A_TEAL};
+                border-top:2px solid {A_TEAL};
+            }}
+            QTabBar::tab:hover:!selected {{ background:{W_PANEL2}; color:{W_TEXT}; }}
+        """)
 
-        # Connecter les actions View
-        pairs = {"Motor Dashboard": dock_m, "Pump Monitor": dock_p,
-                 "Vehicle & Rain": dock_v,  "CRS / LIN Monitor": dock_c}
-        for name, act in self._dock_acts.items():
-            act.toggled.connect(pairs[name].setVisible)
+        # ── Page 1 : Motor / Pompe ────────────────────────────
+        pg1 = QWidget(); pg1.setStyleSheet(f"background:{W_BG};")
+        l1  = QHBoxLayout(pg1); l1.setContentsMargins(6, 6, 6, 6); l1.setSpacing(6)
+        l1.addWidget(self._motor_panel, 1)
+        l1.addWidget(self._pump_panel,  1)
+        self._tabs.addTab(pg1, "⚙  Motor / Pompe")
+
+        # ── Page 2 : LIN / CRS ───────────────────────────────
+        pg2 = QWidget(); pg2.setStyleSheet(f"background:{W_BG};")
+        l2  = QVBoxLayout(pg2); l2.setContentsMargins(0, 0, 0, 0); l2.setSpacing(0)
+        l2.addWidget(self._crslin_panel)
+        self._tabs.addTab(pg2, "📡  LIN / CRS")
+
+        # ── Page 3 : CAN / Vehicle ────────────────────────────
+        pg3  = QWidget(); pg3.setStyleSheet(f"background:{W_BG};")
+        spl3 = QSplitter(Qt.Orientation.Vertical)
+        spl3.setStyleSheet(f"QSplitter::handle{{background:{W_BORDER};height:3px;}}")
+        spl3.addWidget(self._can_panel)
+        spl3.addWidget(self._veh_panel)
+        spl3.setSizes([520, 300])
+        l3 = QVBoxLayout(pg3); l3.setContentsMargins(0, 0, 0, 0); l3.addWidget(spl3)
+        self._tabs.addTab(pg3, "🚗  CAN / Vehicle")
+
+        # ── Page 4 : Tests Auto ───────────────────────────────
+        self._tabs.addTab(self._auto_test_panel, "🧪  Tests Auto")
+
+        # Pause oscilloscopes sur onglets cachés → gain CPU
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        self._on_tab_changed(0)
+
+        self.setCentralWidget(self._tabs)
 
         sb = QStatusBar(); sb.setFont(QFont(FONT_MONO, 10))
         sb.setStyleSheet(
@@ -258,16 +312,21 @@ class MainWindow(QMainWindow):
         act_quit.triggered.connect(self.close); m_conn.addAction(act_quit)
 
         m_view = mb.addMenu("View")
-        self._dock_acts: dict[str, QAction] = {}
-        for name in ["Motor Dashboard", "Pump Monitor", "Vehicle & Rain", "CRS / LIN Monitor"]:
-            act = QAction(f"  {name}", self); act.setCheckable(True); act.setChecked(True)
-            m_view.addAction(act); self._dock_acts[name] = act
+        for i, (name, shortcut) in enumerate([
+            ("⚙  Motor / Pompe",  "Ctrl+1"),
+            ("📡  LIN / CRS",     "Ctrl+2"),
+            ("🚗  CAN / Vehicle", "Ctrl+3"),
+            ("🧪  Tests Auto",    "Ctrl+4"),
+        ]):
+            act = QAction(f"  {name}", self); act.setShortcut(shortcut)
+            act.triggered.connect(lambda _, idx=i: self._tabs.setCurrentIndex(idx))
+            m_view.addAction(act)
 
         m_help = mb.addMenu("Help")
         act_about = QAction("About...", self)
         act_about.triggered.connect(lambda: QMessageBox.about(
             self, "WipeWash HIL Dashboard",
-            "WipeWash Unified Dashboard v4\n\nHIL Test Bench Platform\n"
+            "WipeWash Unified Dashboard v5\n\nHIL Test Bench Platform\n"
             "Automotive Wipe & Wash System\n\ndSPACE SCALEXIO compatible"))
         m_help.addAction(act_about)
 
@@ -287,6 +346,7 @@ class MainWindow(QMainWindow):
             (PORT_MOTOR,   "Motors", A_GREEN),
             (PORT_LIN,     "LIN",    A_TEAL),
             (PORT_PUMP_RX, "Pump",   A_ORANGE),
+            (PORT_CAN,     "CAN",    CAN_VEH_C),
         ]:
             led = StatusLed(9); lbl = _lbl(f" {name} ", 10, True, W_TEXT_DIM)
             self._toolbar_leds[port]   = led
@@ -308,15 +368,34 @@ class MainWindow(QMainWindow):
         dt_t = QTimer(self); dt_t.timeout.connect(self._upd_dt); dt_t.start(1000)
         self._upd_dt()
 
-    @staticmethod
-    def _make_dock(title: str, widget: QWidget) -> QDockWidget:
-        dock = QDockWidget(title)
-        dock.setWidget(widget)
-        dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-            | QDockWidget.DockWidgetFeature.DockWidgetClosable)
-        return dock
+    def _on_tab_changed(self, idx: int) -> None:
+        """Pause tous les timers d'animation sur les pages cachées → gain CPU majeur.
+        Page 0=Motor/Pompe  Page 1=LIN/CRS  Page 2=CAN/Vehicle  Page 3=Tests
+        """
+        # ── Page 0 : timers MotorWidget + PumpWidget ──────────
+        for attr in ("motor_front", "motor_rear"):
+            t = getattr(getattr(self._motor_panel, attr, None), "_t", None)
+            if t:
+                t.start(60) if idx == 0 else t.stop()
+        pump_t = getattr(getattr(self._pump_panel, "pump_widget", None), "_t", None)
+        if pump_t:
+            pump_t.start(60) if idx == 0 else pump_t.stop()
+
+        # ── Page 1 : LIN oscilloscope + WindshieldWidget ──────
+        osc_lin = getattr(getattr(self._crslin_panel, "_osc", None), "_t", None)
+        if osc_lin:
+            osc_lin.start(100) if idx == 1 else osc_lin.stop()
+        ws_t = getattr(getattr(self._crslin_panel, "_ws", None), "_t", None)
+        if ws_t:
+            ws_t.start(20) if idx == 1 else ws_t.stop()
+
+        # ── Page 2 : CAN oscilloscope + CarTopViewWidget ──────
+        osc_can = getattr(getattr(self._can_panel, "_osc", None), "_t", None)
+        if osc_can:
+            osc_can.start(100) if idx == 2 else osc_can.stop()
+        car_t = getattr(getattr(self._veh_panel, "car_view", None), "_t", None)
+        if car_t:
+            car_t.start(60) if idx == 2 else car_t.stop()
 
     # ── Helpers ──────────────────────────────────────────────
     def _upd_dt(self) -> None:
@@ -330,6 +409,7 @@ class MainWindow(QMainWindow):
     # ── Connexion des signaux ────────────────────────────────
     def _connect_signals(self) -> None:
         self._motor_worker.motor_received.connect(self._motor_panel.on_motor_data)
+        self._motor_worker.motor_received.connect(self._on_motor_data_ws)   # ← BCM→Windshield
         self._motor_worker.status_changed.connect(self._on_motor_status)
         self._motor_worker.wiper_sent.connect(self._on_wiper_sent)
         self._lin_worker.lin_received.connect(self._on_lin_event)
@@ -337,13 +417,50 @@ class MainWindow(QMainWindow):
         self._pump_signal.data_received.connect(self._pump_panel.update_display)
         self._pump_signal.connection_ok.connect(self._on_pump_ok)
         self._pump_signal.connection_lost.connect(self._on_pump_lost)
+        self._can_worker.can_received.connect(self._can_panel.add_can_event)
+        self._can_worker.status_changed.connect(self._on_can_status)
+        self._can_panel.ack_needed.connect(
+            self._can_worker.send_0x202,
+            Qt.ConnectionType.DirectConnection
+        )
+
+    def _on_motor_data_ws(self, data: dict) -> None:
+        """
+        Dispatch données BCM temps réel vers WindshieldWidget + Rest Contact + CRS Fault.
+        Appelé à chaque motor_received (~200ms) depuis le TCP broadcast du BCM.
+        Complète _on_lin_event : les données moteur arrivent sur port 5000,
+        les events LIN sur port 5555 — les deux sources alimentent le windshield.
+        """
+        motor_on     = data.get("front", "OFF") == "ON"
+        rest_raw     = bool(data.get("rest_contact_raw",   False))
+        blade_cycles = int(data.get("front_blade_cycles",  0))
+        bcm_state    = str(data.get("state",               "OFF"))
+        crs_fault    = int(data.get("crs_fault",           0))
+        cur_op       = getattr(self._crslin_panel, "_cur_op", 0)
+
+        # WindshieldWidget : état temps réel BCM
+        ws = getattr(self._crslin_panel, "_ws", None)
+        if ws is not None:
+            ws.set_bcm_state(
+                front_motor_on   = motor_on,
+                rest_contact_raw = rest_raw,
+                blade_cycles     = blade_cycles,
+                bcm_state        = bcm_state,
+                op               = cur_op,
+            )
+
+        # Rest Contact panel
+        self._crslin_panel.update_rest_contact(rest_raw, blade_cycles)
+
+        # CRS Fault (depuis rte.crs_fault broadcasté par BCM)
+        self._crslin_panel.update_crs_fault(crs_fault)
 
     def _set_tb_status(self, port: int, ok: bool, host: str = "") -> None:
         led = self._toolbar_leds.get(port)
         lbl = self._toolbar_labels.get(port)
         if not led or not lbl: return
         led.set_state(ok, A_GREEN if ok else A_RED)
-        n = {PORT_MOTOR: "Motors", PORT_LIN: "LIN", PORT_PUMP_RX: "Pump"}.get(port, "?")
+        n = _PORT_NAMES.get(port, "?")
         if ok:
             lbl.setText(f" {n}  ")
             lbl.setStyleSheet(
@@ -359,12 +476,59 @@ class MainWindow(QMainWindow):
     def _on_motor_status(self, msg: str, ok: bool) -> None:
         self._set_tb_status(PORT_MOTOR, ok, self._motor_worker.host)
         self._qsb.showMessage(f"[Motors] {msg}")
+        # Cree RTEClient Redis des qu'un host BCM est connu
+        host = self._motor_worker.host
+        if ok and host and self._rte_client is None:
+            self._rte_client = RTEClient(host)
+            connected = self._rte_client.is_connected()
+            if hasattr(self, '_auto_test_panel'):
+                self._auto_test_panel.set_redis_status(connected, host)
+            if connected:
+                self._qsb.showMessage(f"[Redis] Connecte sur {host}:6379")
+        elif not ok:
+            self._rte_client = None
+            if hasattr(self, '_auto_test_panel'):
+                self._auto_test_panel.set_redis_status(False)
 
     def _on_wiper_sent(self, op: int, seq: int) -> None:
         self._crslin_panel.on_wiper_sent(op, seq)
 
     def _on_lin_event(self, ev: dict) -> None:
         self._crslin_panel.add_lin_event(ev)
+        t = ev.get("type", "")
+
+        # ── Trame 0x16 TX (BCM → slave) : wiper_op + état moteur + rest contact ──
+        if t == "TX":
+            op          = int(ev.get("op",            0))
+            bcm_state   = str(ev.get("bcm_state",     "OFF"))
+            motor_on    = bool(ev.get("front_motor_on", False))
+            rest_raw    = bool(ev.get("rest_contact_raw", False))
+            blade_cycles= int(ev.get("front_blade_cycles", 0))
+
+            # Windshield temps réel BCM
+            self._crslin_panel._ws.set_bcm_state(
+                front_motor_on=motor_on,
+                rest_contact_raw=rest_raw,
+                blade_cycles=blade_cycles,
+                bcm_state=bcm_state,
+                op=op,
+            )
+            # Rest contact panel
+            self._crslin_panel.update_rest_contact(rest_raw, blade_cycles)
+
+        # ── Trame 0x17 RX (slave → BCM) : CRS_InternalFault ──────────────────
+        elif t == "RX_HDR" and ev.get("pid") == "0x97":
+            fault_val = int(ev.get("fault", "0x00"), 16) if isinstance(
+                ev.get("fault"), str) else int(ev.get("fault", 0))
+            self._crslin_panel.update_crs_fault(fault_val)
+
+        # ── Ack injection fault depuis simulateur ─────────────────────────────
+        elif t == "crs_fault_ack":
+            try:
+                fault_val = int(ev.get("fault", "0x00"), 16)
+                self._crslin_panel.update_crs_fault(fault_val)
+            except (ValueError, TypeError):
+                pass
 
     def _on_lin_status(self, msg: str, ok: bool) -> None:
         self._set_tb_status(PORT_LIN, ok, self._lin_worker.host)
@@ -379,6 +543,11 @@ class MainWindow(QMainWindow):
         self._set_tb_status(PORT_PUMP_RX, False)
         self._pump_panel.on_disconnected()
 
+    def _on_can_status(self, msg: str, ok: bool) -> None:
+        self._set_tb_status(PORT_CAN, ok, self._can_worker.host)
+        self._can_panel.set_can_status(msg, ok)
+        self._qsb.showMessage(f"[CAN] {msg}")
+
     def _on_rescan(self) -> None:
         # Moteurs
         self._motor_worker.stop()
@@ -388,10 +557,11 @@ class MainWindow(QMainWindow):
         self._motor_worker.moveToThread(self._motor_thread)
         self._motor_thread.started.connect(self._motor_worker.run)
         self._motor_worker.motor_received.connect(self._motor_panel.on_motor_data)
+        self._motor_worker.motor_received.connect(self._on_motor_data_ws)   # ← BCM→Windshield
         self._motor_worker.status_changed.connect(self._on_motor_status)
         self._motor_worker.wiper_sent.connect(self._on_wiper_sent)
-        self._veh_panel._getter    = lambda: self._motor_worker
-        self._crslin_panel._wiper_setter = self._motor_worker.set_wiper_op
+        self._veh_panel._getter          = lambda: self._motor_worker
+        self._crslin_panel._wiper_setter = self._lin_worker.set_wiper_op
         self._motor_thread.start()
         # LIN
         self._lin_worker.stop()
@@ -402,10 +572,26 @@ class MainWindow(QMainWindow):
         self._lin_thread.started.connect(self._lin_worker.run)
         self._lin_worker.lin_received.connect(self._on_lin_event)
         self._lin_worker.status_changed.connect(self._on_lin_status)
+        self._crslin_panel._lin_sender = self._lin_worker.queue_send   # ← CRS fault injection
         self._lin_thread.start()
+        # CAN
+        self._can_worker.stop()
+        self._can_thread.quit(); self._can_thread.wait(2000)
+        self._can_worker = CANWorker()
+        self._can_thread = QThread()
+        self._can_worker.moveToThread(self._can_thread)
+        self._can_thread.started.connect(self._can_worker.run)
+        self._can_worker.can_received.connect(self._can_panel.add_can_event)
+        self._can_worker.status_changed.connect(self._on_can_status)
+        self._can_panel.ack_needed.connect(
+            self._can_worker.send_0x202,
+            Qt.ConnectionType.DirectConnection
+        )
+        self._can_thread.start()
         # Pompe — PumpDataClient se reconnecte automatiquement
 
     def closeEvent(self, e) -> None:
         self._motor_worker.stop(); self._motor_thread.quit(); self._motor_thread.wait(2000)
         self._lin_worker.stop();   self._lin_thread.quit();   self._lin_thread.wait(2000)
+        self._can_worker.stop();   self._can_thread.quit();   self._can_thread.wait(2000)
         e.accept()

@@ -1,0 +1,121 @@
+{
+    "dtc_status_availability_mask": "0xFF",
+    "dtcs": {
+        "B2101": {
+            "bytes": [
+                178,
+                33,
+                1
+            ],
+            "description": "WC Internal Failure",
+            "category": "functional",
+            "storage": "confirmed",
+            "status": 47,
+            "occurrence_count": 56,
+            "first_occurrence": "2026-03-25 09:48:10 CET",
+            "last_occurrence": "2026-03-30 14:48:45 CET",
+            "snapshot": {
+                "ignition": 1,
+                "wiper_mode": "OFF",
+                "motor_curr": 998,
+                "blade_pos": 0,
+                "rain": 0,
+                "vehicle_spd": 0
+            },
+            "snapshot_records": [
+                {
+                    "record_number": 52,
+                    "timestamp": "2026-03-30 13:57:04 CET",
+                    "data": {
+                        "F190_ignition": 1,
+                        "F191_wiper_mode": "OFF",
+                        "F192_motor_curr": 181,
+                        "F193_blade_pos": 0,
+                        "F194_rain": 0,
+                        "F195_vehicle_spd": 0
+                    }
+                },
+                {
+                    "record_number": 53,
+                    "timestamp": "2026-03-30 14:33:14 CET",
+                    "data": {
+                        "F190_ignition": 1,
+                        "F191_wiper_mode": "OFF",
+                        "F192_motor_curr": 183,
+                        "F193_blade_pos": 0,
+                        "F194_rain": 0,
+                        "F195_vehicle_spd": 0
+                    }
+                },
+                {
+                    "record_number": 54,
+                    "timestamp": "2026-03-30 14:34:51 CET",
+                    "data": {
+                        "F190_ignition": 1,
+                        "F191_wiper_mode": "OFF",
+                        "F192_motor_curr": 0,
+                        "F193_blade_pos": 0,
+                        "F194_rain": 0,
+                        "F195_vehicle_spd": 0
+                    }
+                },
+                {
+                    "record_number": 55,
+                    "timestamp": "2026-03-30 14:46:16 CET",
+                    "data": {
+                        "F190_ignition": 1,
+                        "F191_wiper_mode": "OFF",
+                        "F192_motor_curr": 444,
+                        "F193_blade_pos": 0,
+                        "F194_rain": 0,
+                        "F195_vehicle_spd": 0
+                    }
+                },
+                {
+                    "record_number": 56,
+                    "timestamp": "2026-03-30 14:48:45 CET",
+                    "data": {
+                        "F190_ignition": 1,
+                        "F191_wiper_mode": "OFF",
+                        "F192_motor_curr": 998,
+                        "F193_blade_pos": 0,
+                        "F194_rain": 0,
+                        "F195_vehicle_spd": 0
+                    }
+                }
+            ]
+        },
+        "B2102": {
+            "bytes": [
+                178,
+                33,
+                2
+            ],
+            "description": "WC Motor Driver Fault",
+            "category": "electrical",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2103": {
+            "bytes": [
+                178,
+                33,
+                3
+            ],
+            "description": "WC Position Sensor Fault",
+            "category": "functional",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        }
+    }
+}
