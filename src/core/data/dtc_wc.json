@@ -1,0 +1,69 @@
+{
+    "dtc_status_availability_mask": "0xFF",
+    "dtcs": {
+        "B2101": {
+            "bytes": [
+                178,
+                33,
+                1
+            ],
+            "description": "WC Internal Failure",
+            "category": "functional",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2102": {
+            "bytes": [
+                178,
+                33,
+                2
+            ],
+            "description": "WC Motor Driver Fault",
+            "category": "electrical",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2103": {
+            "bytes": [
+                178,
+                33,
+                3
+            ],
+            "description": "WC Position Sensor Fault",
+            "category": "functional",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2104": {
+            "bytes": [
+                178,
+                33,
+                4
+            ],
+            "description": "WC CAN Communication Lost - No BCM frame received",
+            "category": "communication",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        }
+    }
+}
