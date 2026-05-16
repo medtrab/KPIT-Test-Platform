@@ -1,0 +1,16 @@
+# ==============================================================================
+# HIL Diagnostic Platform — Python Dependencies
+# Wiper & Wash System · DoIP/UDS · PFE 2026 · KPIT Engineering Sfax
+# ==============================================================================
+# Install: pip install -r requirements.txt
+# Python:  3.11 (recommended)
+# ==============================================================================
+
+# ── UI Framework ───────────────────────────────────────────────────────────────
+PySide6>=6.4.0
+
+# ── Network Capture (Frame Monitor — requires Wireshark/tshark installed) ──────
+pyshark>=0.6.0
+
+# ── Testing ────────────────────────────────────────────────────────────────────
+pytest>=7.0.0
