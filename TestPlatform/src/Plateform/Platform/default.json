@@ -1,0 +1,17 @@
+{
+  "_schema": "3.0",
+  "_project": "WipeWash_BCM_HIL",
+  "_component": "MotorPump_Page",
+  "_profile": "default",
+  "_timestamp": "2026-04-14T22:19:11",
+  "_locked": false,
+  "panels": [
+    {
+      "instrument_id": "pump_current",
+      "x": 0,
+      "y": 184,
+      "w": 260,
+      "h": 220
+    }
+  ]
+}

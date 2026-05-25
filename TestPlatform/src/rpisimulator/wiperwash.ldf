@@ -1,0 +1,88 @@
+LIN_description_file;
+
+LIN_protocol_version = "2.1";
+LIN_language_version = "2.1";
+LIN_speed = 19.2 kbps;
+
+Nodes {
+  Master: BCM, 5 ms, 0.1 ms;
+  Slaves: CRS;
+}
+
+Signals {
+  /* ── Trame 0x16 : LeftStickWiperRequester ─────────────────────── */
+  WiperRequestOperation: 4, 0x00, CRS, BCM;   /* bits 3:0 de byte0 — Enum  */
+  StickStatus:           4, 0x00, CRS, BCM;   /* bits 7:4 de byte0 — Bitfield (bit0=Valid,bit1=Debounce,bit2=Stuck,bit3=Rsvd) */
+  AliveCounter:          8, 0x00, CRS, BCM;   /* byte1              — Counter 0-255 */
+
+  /* ── Trame 0x17 : CRS_Status ──────────────────────────────────── */
+  CRS_InternalFault_Stick:  1, 0x00, CRS, BCM;   /* byte0 bit0 — 0=OK,1=Fault */
+  CRS_InternalFault_Supply: 1, 0x00, CRS, BCM;   /* byte0 bit1 — 0=OK,1=Fault */
+  CRS_InternalFault_Comms:  1, 0x00, CRS, BCM;   /* byte0 bit2 — 0=OK,1=Fault */
+  CRS_Reserved:             5, 0x00, CRS, BCM;   /* byte0 bits7:3 — Set to 0   */
+  CRS_Version:              8, 0x00, CRS, BCM;   /* byte1         — FW version  */
+}
+
+Frames {
+  LeftStickWiperRequester: 0x16, CRS, 2 {
+    WiperRequestOperation, 0;   /* start bit 0  (bits 3:0 de byte0) */
+    StickStatus,           4;   /* start bit 4  (bits 7:4 de byte0) */
+    AliveCounter,          8;   /* start bit 8  (byte1)             */
+  }
+
+  CRS_Status: 0x17, CRS, 2 {
+    CRS_InternalFault_Stick,  0;   /* start bit 0 (byte0 bit0) */
+    CRS_InternalFault_Supply, 1;   /* start bit 1 (byte0 bit1) */
+    CRS_InternalFault_Comms,  2;   /* start bit 2 (byte0 bit2) */
+    CRS_Reserved,             3;   /* start bit 3 (byte0 bits7:3) */
+    CRS_Version,              8;   /* start bit 8 (byte1)         */
+  }
+}
+
+Node_attributes {
+  CRS {
+    LIN_protocol = "2.1";
+    configured_NAD = 0x01;
+    initial_NAD    = 0x01;
+    product_id     = 0x0001, 0x0001, 0x01;
+    response_error = StickStatus;
+    P2_min         = 50 ms;
+    ST_min         = 0 ms;
+  }
+}
+
+Schedule_tables {
+  NormalSchedule {
+    LeftStickWiperRequester  delay 400 ms;
+    CRS_Status               delay 800 ms;
+  }
+}
+
+Signal_encoding_types {
+  WiperRequestOperationEncoding {
+    logical_value, 0, "OFF";
+    logical_value, 1, "TOUCH";
+    logical_value, 2, "SPEED1";
+    logical_value, 3, "SPEED2";
+    logical_value, 4, "AUTO";
+    logical_value, 5, "FRONT_WASH";
+    logical_value, 6, "REAR_WASH";
+    logical_value, 7, "REAR_WIPE";
+  }
+
+  StickStatusEncoding {
+    logical_value, 0, "INVALID";
+    logical_value, 1, "VALID";
+  }
+
+  FaultBitEncoding {
+    logical_value, 0, "OK";
+    logical_value, 1, "Fault";
+  }
+}
+
+Signal_representation {
+  WiperRequestOperationEncoding: WiperRequestOperation;
+  StickStatusEncoding:           StickStatus;
+  FaultBitEncoding:              CRS_InternalFault_Stick, CRS_InternalFault_Supply, CRS_InternalFault_Comms;
+}

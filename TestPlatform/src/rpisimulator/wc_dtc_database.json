@@ -1,0 +1,117 @@
+{
+    "dtc_status_availability_mask": "0xFF",
+    "dtcs": {
+        "B2101": {
+            "bytes": [
+                178,
+                33,
+                1
+            ],
+            "description": "WC Internal Failure",
+            "category": "functional",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": [],
+            "first_occurrence_ts": null,
+            "last_occurrence_ts": null,
+            "failed_cycles": 0,
+            "_seen_this_cycle": false
+        },
+        "B2102": {
+            "bytes": [
+                178,
+                33,
+                2
+            ],
+            "description": "WC Motor Driver Fault",
+            "category": "electrical",
+            "storage": "confirmed",
+            "status": 47,
+            "occurrence_count": 1,
+            "first_occurrence": "2026-05-07 17:03:43 CET",
+            "last_occurrence": "2026-05-07 17:03:43 CET",
+            "snapshot": {
+                "ignition": 1,
+                "wiper_mode": "OFF",
+                "motor_curr": 0,
+                "blade_pos": 0
+            },
+            "snapshot_records": [
+                {
+                    "record_number": 1,
+                    "timestamp": "2026-05-07 17:03:43 CET",
+                    "data": {
+                        "F190_ignition": 1,
+                        "F191_wiper_mode": "OFF",
+                        "F192_motor_curr": 0,
+                        "F193_blade_pos": 0
+                    }
+                }
+            ],
+            "first_occurrence_ts": 1778169823.597686,
+            "last_occurrence_ts": 1778169823.59768,
+            "failed_cycles": 1,
+            "_seen_this_cycle": true
+        },
+        "B2103": {
+            "bytes": [
+                178,
+                33,
+                3
+            ],
+            "description": "WC Position Sensor Fault",
+            "category": "functional",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": [],
+            "first_occurrence_ts": null,
+            "last_occurrence_ts": null,
+            "failed_cycles": 0,
+            "_seen_this_cycle": false
+        },
+        "B2104": {
+            "bytes": [
+                178,
+                33,
+                4
+            ],
+            "description": "WC CAN NACK - 3 consecutive NACKs (AckStatus=1, ErrorCode!=0) sent to BCM",
+            "category": "electrical",
+            "storage": "confirmed",
+            "status": 47,
+            "occurrence_count": 1,
+            "first_occurrence": "2026-05-07 17:03:44 CET",
+            "last_occurrence": "2026-05-07 17:03:44 CET",
+            "snapshot": {
+                "ignition": 1,
+                "wiper_mode": "OFF",
+                "motor_curr": 0,
+                "blade_pos": 0
+            },
+            "snapshot_records": [
+                {
+                    "record_number": 1,
+                    "timestamp": "2026-05-07 17:03:44 CET",
+                    "data": {
+                        "F190_ignition": 1,
+                        "F191_wiper_mode": "OFF",
+                        "F192_motor_curr": 0,
+                        "F193_blade_pos": 0
+                    }
+                }
+            ],
+            "first_occurrence_ts": 1778169824.5038977,
+            "last_occurrence_ts": 1778169824.5038917,
+            "failed_cycles": 1,
+            "_seen_this_cycle": true
+        }
+    }
+}

@@ -1,0 +1,295 @@
+// ============================================================
+//  Jenkinsfile — WipeWash BCM  CI Pipeline
+//  Version : 2.0  (portabilité + couverture complète des tests)
+// ============================================================
+//
+//  ARCHITECTURE DU DÉPÔT :
+//    <depot>/
+//      ci/
+//        Jenkinsfile                ← ce fichier
+//        run_tests_headless.py      ← runner sans GUI
+//        requirements-ci.txt        ← dépendances pip
+//        scripts/
+//          setup_venv.bat           ← création/màj venv
+//          check_bench.ps1          ← vérification connectivité
+//      platform/
+//        test_cases.py              ← ALL_TESTS (T01…T_B2009_CASA)
+//        rte_client.py, sim_client.py, network.py, report_generator.py
+//      reports/                     ← générés à chaque build
+//
+//  PRÉREQUIS AGENT JENKINS :
+//    - Windows 10/11, Python 3.11+ dans le PATH
+//    - Accès réseau vers RPiBCM (10.20.0.25) et RPiSIM (10.20.0.7)
+//    - Plugins Jenkins : JUnit, HTML Publisher, Pipeline
+//
+//  PORTABILITÉ :
+//    - DEPOT_DIR est résolu dynamiquement depuis le workspace Jenkins
+//      → plus besoin de hardcoder C:\Users\PC\Desktop\depot
+//    - Le venv est recréé dans le workspace si absent
+//    - Tous les tests ALL_TESTS sont couverts par défaut
+// ============================================================
+
+pipeline {
+
+    // ── Agent : nœud Jenkins sur le PC du banc ────────────────────────────
+    agent { label 'bcm-bench-win' }
+
+    // ── Paramètres configurables depuis l'interface Jenkins ───────────────
+    parameters {
+
+        // Sélection des tests : vide = campagne complète (ALL_TESTS)
+        // Exemples : 'T01,T02' pour deux tests, 'T30,T31,T32' pour un groupe
+        string(
+            name:         'TEST_IDS',
+            defaultValue: '',
+            description:  'IDs des tests séparés par virgule (vide = tous les tests ALL_TESTS). Ex: T01,T30,TC_LIN_002'
+        )
+
+        // Adresses IP des deux Raspberry Pi
+        string(
+            name:         'BCM_HOST',
+            defaultValue: '10.20.0.25',
+            description:  'IP du RPiBCM (bcm_rte.py + bcm_tcp_broadcast.py)'
+        )
+        string(
+            name:         'SIM_HOST',
+            defaultValue: '10.20.0.7',
+            description:  'IP du RPiSIM (crslin.py + bcmcan.py)'
+        )
+
+        // Timeout global de la campagne (toutes les durées de tests additionnées)
+        string(
+            name:         'GLOBAL_TIMEOUT',
+            defaultValue: '900',
+            description:  'Timeout global de la campagne en secondes (défaut 900s ≈ 15min pour ~50 tests)'
+        )
+
+        // Comportement en cas d'échec
+        booleanParam(
+            name:         'FAIL_FAST',
+            defaultValue: false,
+            description:  'Arrêter la campagne au premier test FAIL ou TIMEOUT'
+        )
+
+        // Vérification préalable du banc (désactivable pour debug CI)
+        booleanParam(
+            name:         'CHECK_BENCH',
+            defaultValue: true,
+            description:  'Vérifier la connectivité du banc avant les tests (Redis, ports TCP)'
+        )
+    }
+
+    options {
+        timeout(time: 25, unit: 'MINUTES')    // garde-fou Jenkins global
+        timestamps()                           // préfixe timestamp sur chaque ligne de log
+        disableConcurrentBuilds()              // un seul build à la fois (banc physique unique)
+        buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '10'))
+    }
+
+    environment {
+        // ── Résolution portable du dossier depot ──────────────────────────
+        // WORKSPACE = racine du checkout Jenkins (ex: C:\Jenkins\workspace\WipeWash)
+        // Si le dépôt est checké directement dans WORKSPACE, DEPOT_DIR = WORKSPACE
+        // Si le dépôt est dans un sous-dossier 'depot', DEPOT_DIR = WORKSPACE\depot
+        // La logique ci-dessous gère les deux cas.
+        DEPOT_DIR      = "${WORKSPACE}"
+        REPORTS_DIR    = "${WORKSPACE}\\reports"
+        VENV_DIR       = "${WORKSPACE}\\.venv"
+        PYTHON_EXE     = "${WORKSPACE}\\.venv\\Scripts\\python.exe"
+        PIP_EXE        = "${WORKSPACE}\\.venv\\Scripts\\pip.exe"
+    }
+
+    stages {
+
+        // ════════════════════════════════════════════════════════════════
+        //  STAGE 1 — Environnement Python
+        //  Crée ou réutilise le venv, installe les dépendances
+        // ════════════════════════════════════════════════════════════════
+        stage('Setup Python') {
+            steps {
+                echo "=== [1/5] Setup Python venv ==="
+                echo "DEPOT_DIR  = ${env.DEPOT_DIR}"
+                echo "VENV_DIR   = ${env.VENV_DIR}"
+
+                // Supprimer le venv existant pour forcer une recréation propre
+                bat "if exist \"${env.VENV_DIR}\" rmdir /s /q \"${env.VENV_DIR}\""
+
+                // Déléguer au script .bat dédié (gestion pip, requirements, logs)
+                bat """
+                    SET PATH=C:\\Users\\PC\\AppData\\Local\\Programs\\Python\\Python311;C:\\Users\\PC\\AppData\\Local\\Programs\\Python\\Python311\\Scripts;%PATH%
+                    call "${env.DEPOT_DIR}\\ci\\scripts\\setup_venv.bat" "${env.DEPOT_DIR}"
+                """
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        //  STAGE 2 — Vérification banc (optionnel)
+        //  Teste ping, Redis, ports TCP critiques
+        // ════════════════════════════════════════════════════════════════
+        stage('Bench Connectivity') {
+            when {
+                expression { return params.CHECK_BENCH == true }
+            }
+            steps {
+                echo "=== [2/5] Vérification connectivité banc ==="
+                echo "  BCM : ${params.BCM_HOST}"
+                echo "  SIM : ${params.SIM_HOST}"
+
+                // check_bench.ps1 sort en exit 2 si Redis est mort (bloquant)
+                // Les warnings ports TCP sont non-bloquants
+                powershell """
+                    & "${env.DEPOT_DIR}\\ci\\scripts\\check_bench.ps1" `
+                        -BcmHost  "${params.BCM_HOST}" `
+                        -SimHost  "${params.SIM_HOST}" `
+                        -Python   "${env.PYTHON_EXE}"
+                    exit \$LASTEXITCODE
+                """
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        //  STAGE 3 — Exécution des tests
+        //  Lance run_tests_headless.py avec les paramètres choisis
+        // ════════════════════════════════════════════════════════════════
+        stage('Run Tests') {
+            steps {
+                echo "=== [3/5] Exécution des tests ==="
+
+                // Créer le dossier reports s'il n'existe pas
+                bat "if not exist \"${env.REPORTS_DIR}\" mkdir \"${env.REPORTS_DIR}\""
+
+                script {
+                    // ── Construction de la commande ───────────────────────
+                    def cmd = "\"${env.PYTHON_EXE}\" \"${env.DEPOT_DIR}\\ci\\run_tests_headless.py\""
+                    cmd += " --bcm-host ${params.BCM_HOST}"
+                    cmd += " --sim-host ${params.SIM_HOST}"
+                    cmd += " --output   \"${env.REPORTS_DIR}\\report.html\""
+                    cmd += " --json     \"${env.REPORTS_DIR}\\results.json\""
+                    cmd += " --junit    \"${env.REPORTS_DIR}\\junit.xml\""
+                    cmd += " --timeout  ${params.GLOBAL_TIMEOUT}"
+                    cmd += " --bench-id WipeWash-Bench-CI"
+                    cmd += " --operator jenkins"
+
+                    // Filtre optionnel sur les IDs
+                    if (params.TEST_IDS?.trim()) {
+                        cmd += " --tests ${params.TEST_IDS.trim()}"
+                        echo "  → Tests sélectionnés : ${params.TEST_IDS.trim()}"
+                    } else {
+                        echo "  → Campagne complète (ALL_TESTS)"
+                    }
+
+                    if (params.FAIL_FAST) {
+                        cmd += " --fail-fast"
+                        echo "  → Mode fail-fast activé"
+                    }
+
+                    // ── Exécution ─────────────────────────────────────────
+                    def exitCode = bat(script: cmd, returnStatus: true)
+                    env.TEST_EXIT_CODE = "${exitCode}"
+
+                    echo "  → Exit code runner : ${exitCode}"
+
+                    // Codes d'erreur infrastructure → build ERROR immédiat
+                    if (exitCode == 2) {
+                        error("INFRA ERROR : connexion RPi/Redis impossible (exit 2). " +
+                              "Vérifiez que les deux Raspberry Pi sont démarrés et accessibles.")
+                    }
+                    if (exitCode == 3) {
+                        error("TIMEOUT GLOBAL dépassé (exit 3 — ${params.GLOBAL_TIMEOUT}s). " +
+                              "Augmentez --timeout ou réduisez la sélection de tests.")
+                    }
+                    // exit 1 = tests FAIL → build UNSTABLE (traité au stage 5)
+                    // exit 0 = tous PASS
+                }
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        //  STAGE 4 — Publication des rapports
+        //  JUnit (tableau Jenkins), HTML interactif, artefacts ZIP
+        // ════════════════════════════════════════════════════════════════
+        stage('Publish Reports') {
+            steps {
+                echo "=== [4/5] Publication des rapports ==="
+
+                // ── Rapport JUnit (tableau de tests Jenkins) ──────────────
+                junit(
+                    allowEmptyResults: false,
+                    testResults: 'reports\\junit.xml'
+                )
+
+                // ── Rapport HTML interactif ───────────────────────────────
+                publishHTML([
+                    allowMissing:          false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll:               true,
+                    reportDir:             'reports',
+                    reportFiles:           'report.html',
+                    reportName:            'WipeWash Test Report'
+                ])
+
+                // ── Archivage de tous les artefacts rapports ──────────────
+                archiveArtifacts(
+                    artifacts:   'reports\\**',
+                    fingerprint: true,
+                    onlyIfSuccessful: false   // archiver même si tests FAIL
+                )
+
+                echo "  → Rapports publiés dans reports/"
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        //  STAGE 5 — Évaluation du résultat
+        //  Distingue : SUCCESS (tous PASS) / UNSTABLE (≥1 FAIL) / ERROR
+        // ════════════════════════════════════════════════════════════════
+        stage('Evaluate Result') {
+            steps {
+                echo "=== [5/5] Évaluation du résultat ==="
+                script {
+                    def code = env.TEST_EXIT_CODE?.toInteger() ?: 0
+                    if (code == 1) {
+                        currentBuild.result = 'UNSTABLE'
+                        echo "  → [UNSTABLE] Au moins un test a échoué (FAIL ou TIMEOUT)."
+                        echo "     Consultez le rapport HTML pour les détails."
+                    } else {
+                        currentBuild.result = 'SUCCESS'
+                        echo "  → [SUCCESS] Tous les tests PASS."
+                    }
+                }
+            }
+        }
+
+    } // end stages
+
+    // ════════════════════════════════════════════════════════════════════
+    //  POST — Actions après le pipeline (succès, échec, toujours)
+    // ════════════════════════════════════════════════════════════════════
+    post {
+        always {
+            echo "─────────────────────────────────────────────────"
+            echo "Build ${currentBuild.result ?: 'EN COURS'}"
+            echo "URL : ${env.BUILD_URL}"
+            echo "─────────────────────────────────────────────────"
+        }
+
+        success {
+            echo "✓ Campagne WipeWash réussie — tous les tests PASS."
+        }
+
+        unstable {
+            echo "⚠ Campagne WipeWash UNSTABLE — vérifiez les tests FAIL."
+            echo "  Rapport HTML : ${env.BUILD_URL}WipeWash_20Test_20Report/"
+        }
+
+        failure {
+            echo "✗ Pipeline en ERREUR (infrastructure ou configuration)."
+            echo "  Vérifiez :"
+            echo "    1. Les deux RPi sont démarrés et sur le réseau"
+            echo "    2. bcm_rte.py, bcm_tcp_broadcast.py tournent sur RPiBCM"
+            echo "    3. crslin.py, bcmcan.py tournent sur RPiSIM"
+            echo "    4. Redis répond sur ${params.BCM_HOST}:6379"
+        }
+    }
+
+} // end pipeline
