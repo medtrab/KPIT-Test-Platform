@@ -1,0 +1,80 @@
+{
+  "_schema": "3.0",
+  "_project": "WipeWash_BCM_HIL",
+  "_component": "MotorPump_Page",
+  "_profile": "ALL",
+  "_timestamp": "2026-04-14T23:53:09",
+  "_locked": false,
+  "panels": [
+    {
+      "instrument_id": "pump_widget",
+      "x": 8,
+      "y": 0,
+      "w": 200,
+      "h": 160
+    },
+    {
+      "instrument_id": "pump_current",
+      "x": 8,
+      "y": 160,
+      "w": 200,
+      "h": 160
+    },
+    {
+      "instrument_id": "pump_voltage",
+      "x": 8,
+      "y": 320,
+      "w": 200,
+      "h": 160
+    },
+    {
+      "instrument_id": "pump_timeout",
+      "x": 0,
+      "y": 512,
+      "w": 352,
+      "h": 152
+    },
+    {
+      "instrument_id": "front_motor",
+      "x": 1024,
+      "y": 8,
+      "w": 176,
+      "h": 240
+    },
+    {
+      "instrument_id": "front_current",
+      "x": 824,
+      "y": 0,
+      "w": 200,
+      "h": 160
+    },
+    {
+      "instrument_id": "rear_motor",
+      "x": 1016,
+      "y": 248,
+      "w": 184,
+      "h": 272
+    },
+    {
+      "instrument_id": "rear_current",
+      "x": 992,
+      "y": 528,
+      "w": 200,
+      "h": 160
+    },
+    {
+      "instrument_id": "rest_contact",
+      "x": 784,
+      "y": 560,
+      "w": 200,
+      "h": 160
+    },
+    {
+      "instrument_id": "sys_status",
+      "x": 216,
+      "y": 0,
+      "w": 200,
+      "h": 160
+    }
+  ]
+}

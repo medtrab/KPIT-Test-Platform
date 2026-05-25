@@ -1,0 +1,216 @@
+VERSION ""
+
+NS_ :
+    NS_DESC_
+    CM_
+    BA_DEF_
+    BA_
+    VAL_
+    CAT_DEF_
+    CAT_
+    FILTER
+    BA_DEF_DEF_
+    EV_DATA_
+    ENVVAR_DATA_
+    SGTYPE_
+    SGTYPE_VAL_
+    BA_DEF_SGTYPE_
+    BA_DEF_SGTYPE_VAL_
+    COMP_GRP_
+    COMP_MSG_
+    COMP_SIG_
+    IN_MEAS_NODE_
+    IN_MEAS_SIG_
+    IN_MEAS_GRP_
+    IN_MEAS_GRPREF_
+    ENVVAR_
+    SIG_GROUP_
+    SIG_VALTYPE_
+
+BS_:
+
+BU_: BCM WC SIM
+
+
+/* ─────────────────────────────────────────────────────────────────────
+   0x200 — Wiper_Command   BCM → WC   Cycle: 20 ms   DLC: 8
+   ───────────────────────────────────────────────────────────────────── */
+BO_ 512 Wiper_Command: 8 BCM
+ SG_ WiperMode       :  0|4@1+  (1,0)  [0|15]    ""    WC,SIM
+ SG_ WiperSpeedLevel :  4|4@1+  (1,0)  [0|15]    ""    WC,SIM
+ SG_ WashRequest     :  8|2@1+  (1,0)  [0|3]     ""    WC,SIM
+ SG_ Reserved_1      : 10|6@1+  (1,0)  [0|0]     ""    WC,SIM
+ SG_ AliveCounter_TX : 16|8@1+  (1,0)  [0|255]   ""    WC,SIM
+ SG_ Checksum        : 24|8@1+  (1,0)  [0|255]   ""    WC,SIM
+ SG_ Reserved_2      : 32|8@1+  (1,0)  [0|0]     ""    WC,SIM
+ SG_ Reserved_3      : 40|8@1+  (1,0)  [0|0]     ""    WC,SIM
+ SG_ Reserved_4      : 48|8@1+  (1,0)  [0|0]     ""    WC,SIM
+ SG_ Reserved_5      : 56|8@1+  (1,0)  [0|0]     ""    WC,SIM
+
+/* ─────────────────────────────────────────────────────────────────────
+   0x201 — Wiper_Status    WC → BCM   Cycle: 20 ms   DLC: 8
+   ───────────────────────────────────────────────────────────────────── */
+BO_ 513 Wiper_Status: 8 WC
+ SG_ CurrentMode              :  0|8@1+  (1,0)    [0|255]   ""    BCM,SIM
+ SG_ CurrentSpeed             :  8|8@1+  (1,0)    [0|255]   ""    BCM,SIM
+ SG_ BladePosition            : 16|8@1+  (1,0)    [0|100]   "%"   BCM,SIM
+ SG_ MotorCurrent             : 24|8@1+  (0.1,0)  [0|25.5]  "A"   BCM,SIM
+ SG_ FaultStatus_WC_Internal  : 32|1@1+  (1,0)    [0|1]     ""    BCM,SIM
+ SG_ FaultStatus_MotorDriver  : 33|1@1+  (1,0)    [0|1]     ""    BCM,SIM
+ SG_ FaultStatus_PosSensor    : 34|1@1+  (1,0)    [0|1]     ""    BCM,SIM
+ SG_ FaultStatus_Supply       : 35|1@1+  (1,0)    [0|1]     ""    BCM,SIM
+ SG_ FaultStatus_CAN_Timeout  : 36|1@1+  (1,0)    [0|1]     ""    BCM,SIM
+ SG_ FaultStatus_MotorBlocked : 37|1@1+  (1,0)    [0|1]     ""    BCM,SIM
+ SG_ FaultStatus_Reserved     : 38|2@1+  (1,0)    [0|0]     ""    BCM,SIM
+ SG_ AliveCounter_RX          : 40|8@1+  (1,0)    [0|255]   ""    BCM,SIM
+ SG_ CRC_Low                  : 48|8@1+  (1,0)    [0|255]   ""    BCM,SIM
+ SG_ Reserved_201             : 56|8@1+  (1,0)    [0|0]     ""    BCM,SIM
+
+/* ─────────────────────────────────────────────────────────────────────
+   0x202 — Wiper_Ack       WC → BCM   Event-Based     DLC: 4
+   ───────────────────────────────────────────────────────────────────── */
+BO_ 514 Wiper_Ack: 4 WC
+ SG_ AckStatus      :  0|1@1+  (1,0)  [0|1]    ""    BCM,SIM
+ SG_ Ack_Reserved   :  1|7@1+  (1,0)  [0|0]    ""    BCM,SIM
+ SG_ ErrorCode      :  8|8@1+  (1,0)  [0|255]  ""    BCM,SIM
+ SG_ AliveCounter_AK: 16|8@1+  (1,0)  [0|255]  ""    BCM,SIM
+ SG_ CRC_Ack        : 24|8@1+  (1,0)  [0|255]  ""    BCM,SIM
+
+/* ─────────────────────────────────────────────────────────────────────
+   0x300 — Vehicle_Status  SIM → BCM  Cycle: 200 ms   DLC: 8
+   ───────────────────────────────────────────────────────────────────── */
+BO_ 768 Vehicle_Status: 8 SIM
+ SG_ IgnitionStatus :  0|8@1+  (1,0)   [0|2]      ""      BCM
+ SG_ ReverseGear    :  8|8@1+  (1,0)   [0|1]      ""      BCM
+ SG_ VehicleSpeed   : 16|16@1+ (0.1,0) [0|6553.5] "km/h"  BCM
+ SG_ Reserved_300   : 32|32@1+ (1,0)   [0|0]      ""      BCM
+
+/* ─────────────────────────────────────────────────────────────────────
+   0x301 — RainSensorData  SIM → BCM  Cycle: 200 ms   DLC: 8
+   ───────────────────────────────────────────────────────────────────── */
+BO_ 769 RainSensorData: 8 SIM
+ SG_ RainIntensity :  0|8@1+  (1,0)  [0|255]  ""   BCM
+ SG_ SensorOK      :  8|8@1+  (1,0)  [0|1]    ""   BCM
+ SG_ Reserved_301  : 16|48@1+ (1,0)  [0|0]    ""   BCM
+
+
+CM_ BU_ BCM "Body Control Module — noeud maitre LIN/CAN";
+CM_ BU_ WC  "Wiper Controller — esclave CAN";
+CM_ BU_ SIM "Simulateur RPi — injecte Vehicle_Status et RainSensorData";
+
+CM_ BO_ 512 "Wiper_Command — BCM vers WC, cycle 20ms. Checksum=CRC-8 sur bytes 0-2,4-7.";
+CM_ BO_ 513 "Wiper_Status  — WC vers BCM, cycle 20ms. CRC_Low=XOR(byte0..byte5,byte7).";
+CM_ BO_ 514 "Wiper_Ack     — WC vers BCM, event-based (confirmation commande), DLC=4.";
+CM_ BO_ 768 "Vehicle_Status — Simulateur vers BCM, cycle 200ms.";
+CM_ BO_ 769 "RainSensorData — Simulateur vers BCM, cycle 200ms.";
+
+CM_ SG_ 512 WiperMode       "0=OFF 1=TOUCH 2=SPEED1 3=SPEED2 4=AUTO 5=WASH";
+CM_ SG_ 512 WiperSpeedLevel "0=OFF 1=Low 2=High";
+CM_ SG_ 512 WashRequest     "0=None 1=Front 2=Rear";
+CM_ SG_ 512 AliveCounter_TX "Rolling counter BCM 0-255, increments each frame";
+CM_ SG_ 512 Checksum        "CRC-8 calculated over bytes 0-2 and 4-7";
+
+CM_ SG_ 513 CurrentMode             "0=OFF 1=TOUCH 2=SPEED1 3=SPEED2 4=AUTO 5=WASH 6=ERROR";
+CM_ SG_ 513 CurrentSpeed            "0=OFF 1=Low 2=High";
+CM_ SG_ 513 BladePosition           "0=park, 100=full sweep (%)";
+CM_ SG_ 513 MotorCurrent            "Motor current 0.1A/bit, range 0-25.5A";
+CM_ SG_ 513 FaultStatus_WC_Internal "0=OK 1=Fault — WC internal failure";
+CM_ SG_ 513 FaultStatus_MotorDriver "0=OK 1=Fault — Motor driver fault";
+CM_ SG_ 513 FaultStatus_PosSensor   "0=OK 1=Fault — Position sensor fault";
+CM_ SG_ 513 FaultStatus_Supply      "0=OK 1=Fault — Supply voltage fault";
+CM_ SG_ 513 FaultStatus_CAN_Timeout "0=OK 1=Timeout — CAN command timeout";
+CM_ SG_ 513 FaultStatus_MotorBlocked "0=OK 1=Blocked — Motor blocked";
+CM_ SG_ 513 AliveCounter_RX         "Rolling counter WC 0-255, increments each frame";
+CM_ SG_ 513 CRC_Low                 "CRC-8 calculated over bytes 0-5";
+
+CM_ SG_ 514 AckStatus       "0=ACK (Success) 1=NACK (Failure)";
+CM_ SG_ 514 ErrorCode       "0x00=NoError 0x01=InvalidCmd 0x02=MotorBlocked 0x03=Overcurrent 0x04=PosSensorFault 0x05=InternalFault 0x06=SupplyFault 0x07=Busy";
+CM_ SG_ 514 AliveCounter_AK "Rolling counter 0-255";
+CM_ SG_ 514 CRC_Ack         "CRC-8 over bytes 0-2";
+
+CM_ SG_ 768 IgnitionStatus "0=OFF 1=ON/ACC 2=START";
+CM_ SG_ 768 ReverseGear    "0=not engaged 1=engaged";
+CM_ SG_ 768 VehicleSpeed   "Vehicle speed km/h (0.1 km/h resolution)";
+CM_ SG_ 769 RainIntensity  "Rain intensity 0-255";
+CM_ SG_ 769 SensorOK       "1=sensor OK 0=sensor fault";
+
+
+BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;
+BA_DEF_ BO_  "GenMsgSendType"  STRING;
+BA_DEF_ SG_  "GenSigStartValue" FLOAT 0 100000;
+
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_DEF_DEF_ "GenMsgSendType"  "Cyclic";
+BA_DEF_DEF_ "GenSigStartValue" 0;
+
+BA_ "GenMsgCycleTime" BO_ 512  400;
+BA_ "GenMsgCycleTime" BO_ 513  400;
+BA_ "GenMsgCycleTime" BO_ 514  0;
+BA_ "GenMsgCycleTime" BO_ 768  200;
+BA_ "GenMsgCycleTime" BO_ 769  200;
+
+BA_ "GenMsgSendType" BO_ 512  "Cyclic";
+BA_ "GenMsgSendType" BO_ 513  "Cyclic";
+BA_ "GenMsgSendType" BO_ 514  "Event";
+BA_ "GenMsgSendType" BO_ 768  "Cyclic";
+BA_ "GenMsgSendType" BO_ 769  "Cyclic";
+
+
+VAL_ 512 WiperMode
+  0 "OFF"
+  1 "TOUCH"
+  2 "SPEED1"
+  3 "SPEED2"
+  4 "AUTO"
+  5 "WASH" ;
+
+VAL_ 512 WiperSpeedLevel
+  0 "OFF"
+  1 "Low"
+  2 "High" ;
+
+VAL_ 512 WashRequest
+  0 "None"
+  1 "Front"
+  2 "Rear" ;
+
+VAL_ 513 CurrentMode
+  0 "OFF"
+  1 "TOUCH"
+  2 "SPEED1"
+  3 "SPEED2"
+  4 "AUTO"
+  5 "WASH"
+  6 "ERROR" ;
+
+VAL_ 513 CurrentSpeed
+  0 "OFF"
+  1 "Low"
+  2 "High" ;
+
+VAL_ 514 AckStatus
+  0 "ACK"
+  1 "NACK" ;
+
+VAL_ 514 ErrorCode
+  0   "NoError"
+  1   "InvalidCmd"
+  2   "MotorBlocked"
+  3   "Overcurrent"
+  4   "PosSensorFault"
+  5   "InternalFault"
+  6   "SupplyFault"
+  7   "Busy" ;
+
+VAL_ 768 IgnitionStatus
+  0 "OFF"
+  1 "ON_ACC"
+  2 "START" ;
+
+VAL_ 768 ReverseGear
+  0 "DISENGAGED"
+  1 "ENGAGED" ;
+
+VAL_ 769 SensorOK
+  0 "FAULT"
+  1 "OK" ;

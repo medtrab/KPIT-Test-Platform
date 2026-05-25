@@ -1,0 +1,6 @@
+.venv/
+reports/
+__pycache__/
+*.pyc
+rpibcm23/
+rpisimulator23/

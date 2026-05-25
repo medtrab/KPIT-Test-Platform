@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<script>
+// Bridge Python via polling — fonctionne dans QWebEngineView sans QWebChannel
+window.__pendingAction__ = null;
+window.__pyAction__ = function(action, filename, content) {
+    window.__pendingAction__ = { action: action, filename: filename, content: content };
+};
+</script>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>BusConfig — LDF / DBC Editor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{overflow-x:hidden;}
+  ::-webkit-scrollbar{width:5px;height:5px;}
+  ::-webkit-scrollbar-track{background:#EDF9E3;}
+  ::-webkit-scrollbar-thumb{background:#8DC63F;border-radius:3px;}
+  ::-webkit-scrollbar-thumb:hover{background:#5A8A20;}
+  input,select{background:#F5FFF0!important;color-scheme:light;}
+  option{background:#F5FFF0!important;color:#1A1A1A;}
+  input[type=number]::-webkit-inner-spin-button{opacity:.4;}
+  @keyframes toastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+  @keyframes pulseDot{0%,100%{opacity:1}50%{opacity:.3}}
+  @keyframes traceIn{from{opacity:0}to{opacity:1}}
+</style>
+</head>
+<body>
+<canvas id="pcb-bg" style="position:fixed;inset:0;z-index:0;pointer-events:none;"></canvas>
+<div id="root" style="position:relative;z-index:1;"></div>
+
+<script>
+// ── PCB canvas — light mode ──────────────────────────────────────────────────
+(function(){
+  const cv = document.getElementById("pcb-bg");
+  const ctx = cv.getContext("2d");
+  let raf, frame = 0, traces = [], pulses = [];
+  const GRID = 46;
+  const TRACE_COLORS = ["rgba(141,198,63,", "rgba(0,122,204,", "rgba(90,138,32,"];
+
+  function resize(){
+    cv.width = window.innerWidth; cv.height = window.innerHeight;
+    build();
+  }
+  function build(){
+    traces=[]; pulses=[];
+    const cols=Math.ceil(cv.width/GRID)+2, rows=Math.ceil(cv.height/GRID)+2;
+    for(let r=1;r<rows;r+=Math.floor(Math.random()*3)+2){
+      const y=r*GRID, x0=Math.floor(Math.random()*(cols/2))*GRID, x1=Math.floor(Math.random()*(cols/2)+cols/2)*GRID;
+      const col=TRACE_COLORS[Math.random()>.6?1:0];
+      traces.push({h:true,y,x0,x1,col}); 
+      if(Math.random()>.5)traces.push({v:true,x:x0,y,col});
+      if(Math.random()>.5)traces.push({v:true,x:x1,y,col});
+    }
+    for(let c=1;c<cols;c+=Math.floor(Math.random()*3)+2){
+      const x=c*GRID, y0=Math.floor(Math.random()*(rows/2))*GRID, y1=Math.floor(Math.random()*(rows/2)+rows/2)*GRID;
+      const col=TRACE_COLORS[Math.random()>.7?2:0];
+      traces.push({h:false,x,y0,y1,col});
+      if(Math.random()>.5)traces.push({v:true,x,y:y0,col});
+      if(Math.random()>.5)traces.push({v:true,x,y:y1,col});
+    }
+  }
+  function spawn(){
+    const lt=traces.filter(t=>!t.v); if(!lt.length)return;
+    const t=lt[Math.floor(Math.random()*lt.length)];
+    pulses.push({t,pos:0,spd:0.004+Math.random()*0.005,len:0.10+Math.random()*0.15});
+  }
+  function draw(){
+    frame++;
+    ctx.clearRect(0,0,cv.width,cv.height);
+    // Light mint background
+    ctx.fillStyle="#F5FFF0";
+    ctx.fillRect(0,0,cv.width,cv.height);
+
+    // Dot grid — very subtle on light bg
+    ctx.fillStyle="rgba(141,198,63,0.18)";
+    for(let x=0;x<cv.width;x+=GRID)for(let y=0;y<cv.height;y+=GRID){
+      ctx.beginPath();ctx.arc(x,y,1.2,0,Math.PI*2);ctx.fill();
+    }
+
+    // Traces
+    traces.forEach(t=>{
+      if(t.v){
+        ctx.beginPath();ctx.arc(t.x,t.y,4,0,Math.PI*2);
+        ctx.strokeStyle=t.col+"0.22)";ctx.lineWidth=1;ctx.stroke();
+        ctx.beginPath();ctx.arc(t.x,t.y,1.8,0,Math.PI*2);
+        ctx.fillStyle=t.col+"0.35)";ctx.fill();
+      }else if(t.h){
+        ctx.beginPath();ctx.moveTo(t.x0,t.y);ctx.lineTo(t.x1,t.y);
+        ctx.strokeStyle=t.col+"0.18)";ctx.lineWidth=1.5;ctx.stroke();
+      }else{
+        ctx.beginPath();ctx.moveTo(t.x,t.y0);ctx.lineTo(t.x,t.y1);
+        ctx.strokeStyle=t.col+"0.18)";ctx.lineWidth=1.5;ctx.stroke();
+      }
+    });
+
+    // Pulses — on light bg use darker, more visible strokes
+    if(frame%14===0)spawn();
+    for(let i=pulses.length-1;i>=0;i--){
+      const p=pulses[i]; p.pos+=p.spd;
+      if(p.pos>1+p.len){pulses.splice(i,1);continue;}
+      const t=p.t, tail=Math.max(0,p.pos-p.len), head=p.pos;
+      let ax,ay,bx,by;
+      if(t.h){const L=t.x1-t.x0;ax=t.x0+tail*L;ay=t.y;bx=t.x0+head*L;by=t.y;}
+      else{const L=t.y1-t.y0;ax=t.x;ay=t.y0+tail*L;bx=t.x;by=t.y0+head*L;}
+      const g=ctx.createLinearGradient(ax,ay,bx,by);
+      g.addColorStop(0,t.col+"0.0)");
+      g.addColorStop(0.5,t.col+"0.55)");
+      g.addColorStop(1,t.col+"0.9)");
+      ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);
+      ctx.strokeStyle=g;ctx.lineWidth=2.5;
+      ctx.shadowColor=t.col+"0.8)";ctx.shadowBlur=6;
+      ctx.stroke();ctx.shadowBlur=0;
+    }
+
+    // Very light scanlines — barely visible on light
+    for(let y=0;y<cv.height;y+=4){
+      ctx.fillStyle="rgba(141,198,63,0.04)";
+      ctx.fillRect(0,y,cv.width,1);
+    }
+    raf=requestAnimationFrame(draw);
+  }
+  resize();
+  window.addEventListener("resize",resize);
+  draw();
+})();
+</script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ── Palette KPIT light ────────────────────────────────────────────────────────
+const C = {
+  bg:        "#F5FFF0",
+  surface:   "#FFFFFF",
+  panel:     "#EDF9E3",
+  panelHigh: "#E0F5D0",
+  border:    "rgba(141,198,63,0.35)",
+  borderHi:  "rgba(141,198,63,0.65)",
+  accent:    "#5A8A20",        // KPIT green dark — readable on white
+  accentBr:  "#8DC63F",        // KPIT green bright
+  accentGlow:"rgba(141,198,63,0.2)",
+  teal:      "#007ACC",        // platform A_TEAL
+  tealLight: "#E6F4FC",
+  amber:     "#C07000",        // darker amber for readability on white
+  amberLight:"#FFF3DC",
+  red:       "#C0392B",
+  redLight:  "#FDEDEC",
+  textPri:   "#1A1A1A",
+  textSec:   "#5A6A4A",
+  textDim:   "#8A9E8A",
+  titlebar:  "#0F1A0A",
+  mono:      "'JetBrains Mono','Fira Code','Consolas',monospace",
+  sans:      "'DM Sans','Segoe UI',sans-serif",
+};
+
+// ── Base styles ───────────────────────────────────────────────────────────────
+const iStyle = {
+  background: "#FFFFFF",
+  border: `1px solid ${C.border}`,
+  borderRadius: 4,
+  color: C.textPri,
+  fontFamily: C.mono,
+  fontSize: 12,
+  padding: "5px 8px",
+  outline: "none",
+  width: "100%",
+  boxSizing: "border-box",
+  transition: "border-color .15s, box-shadow .15s",
+};
+
+const lStyle = {
+  fontFamily: C.sans,
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: "0.06em",
+  color: C.textSec,
+  textTransform: "uppercase",
+  display: "block",
+  marginBottom: 3,
+};
+
+// ── Atoms ─────────────────────────────────────────────────────────────────────
+function Field({label, value, onChange, mono=true, type="text", step, min, max, ac, style:sx={}}) {
+  const [f, setF] = useState(false);
+  const a = ac || C.accent;
+  return (
+    <div style={{marginBottom:10}}>
+      <label style={{...lStyle, color: f ? a : C.textSec}}>{label}</label>
+      <input type={type} step={step} min={min} max={max} value={value}
+        onChange={e=>onChange(e.target.value)}
+        onFocus={()=>setF(true)} onBlur={()=>setF(false)}
+        style={{...iStyle, fontFamily:mono?C.mono:C.sans, color:C.textPri,
+          borderColor: f ? a : "rgba(141,198,63,0.4)",
+          boxShadow: f ? `0 0 0 3px ${a}22` : "none", ...sx}}/>
+    </div>
+  );
+}
+
+function Sel({label, value, onChange, options, ac}) {
+  const a = ac || C.accent;
+  return (
+    <div style={{marginBottom:10}}>
+      <label style={lStyle}>{label}</label>
+      <select value={value} onChange={e=>onChange(e.target.value)} style={{
+        ...iStyle, fontFamily:C.sans, fontSize:11, cursor:"pointer",
+        appearance:"none", color:C.textPri,
+        backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='${encodeURIComponent(a)}'/%3E%3C/svg%3E")`,
+        backgroundRepeat:"no-repeat", backgroundPosition:"right 8px center", paddingRight:24,
+      }}>
+        {options.map(o=><option key={o.value??o} value={o.value??o}>{o.label??o}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function SecHdr({label, accent=C.accent, badge}) {
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:8,
+      padding:"5px 0 7px", borderBottom:`2px solid ${C.accentBr}33`, marginBottom:12}}>
+      <div style={{width:3,height:14,background:accent,borderRadius:2}}/>
+      <span style={{fontFamily:C.sans,fontSize:11,fontWeight:700,
+        letterSpacing:"0.10em",color:accent,textTransform:"uppercase"}}>{label}</span>
+      {badge!==undefined &&
+        <span style={{marginLeft:"auto",background:`${accent}15`,
+          border:`1px solid ${accent}40`,borderRadius:10,padding:"1px 8px",
+          fontFamily:C.mono,fontSize:9,color:accent}}>{badge}</span>}
+    </div>
+  );
+}
+
+function Pill({color, bg, children}) {
+  return (
+    <span style={{background: bg||`${color}12`, border:`1px solid ${color}45`,
+      borderRadius:3,padding:"2px 7px",fontFamily:C.mono,fontSize:9,color}}>
+      {children}
+    </span>
+  );
+}
+
+function Btn({children, onClick, color=C.accent, bg, disabled, variant="solid", style:sx={}}) {
+  const [h,setH] = useState(false);
+  const base = variant==="solid"
+    ? { background: h ? color : (bg||color), color:"#FFFFFF",
+        boxShadow: h ? `0 2px 8px ${color}55` : `0 1px 3px ${color}30` }
+    : { background: h ? `${color}12` : "transparent", color,
+        border:`1px solid ${color}50`, boxShadow: h ? `0 1px 4px ${color}25`:"none" };
+  return (
+    <button onClick={onClick} disabled={disabled}
+      onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)}
+      style={{...base, fontFamily:C.sans, fontSize:11, fontWeight:700,
+        letterSpacing:"0.05em", padding:"7px 16px",
+        border: variant==="solid" ? "none" : base.border,
+        borderRadius:5, cursor:disabled?"not-allowed":"pointer",
+        opacity:disabled?.35:1, transition:"all .12s", ...sx}}>
+      {children}
+    </button>
+  );
+}
+
+function IBtn({icon, onClick, title, color=C.textDim}) {
+  const [h,setH] = useState(false);
+  return (
+    <button title={title} onClick={onClick}
+      onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)}
+      style={{background:h?C.redLight:"transparent",
+        border:`1px solid ${h?C.red+"55":"transparent"}`,
+        borderRadius:3, padding:"3px 7px",
+        color:h?C.red:color, cursor:"pointer", fontSize:11,
+        lineHeight:1, transition:"all .1s"}}>
+      {icon}
+    </button>
+  );
+}
+
+function Card({children, accent, style:sx={}}) {
+  return (
+    <div style={{background:C.surface,
+      border:`1px solid ${accent?"rgba(141,198,63,0.35)":C.border}`,
+      borderLeft:`3px solid ${accent||C.accentBr}`,
+      borderRadius:6, ...sx}}>
+      {children}
+    </div>
+  );
+}
+
+function Toast({message, type}) {
+  if (!message) return null;
+  const color = type==="error"?C.red:type==="warn"?C.amber:C.accent;
+  const bg    = type==="error"?C.redLight:type==="warn"?C.amberLight:C.panel;
+  return (
+    <div style={{position:"fixed",bottom:20,right:20,
+      background:bg, border:`1px solid ${color}55`,
+      borderLeft:`4px solid ${color}`,
+      borderRadius:6,padding:"10px 16px",
+      fontFamily:C.sans,fontSize:12,color:C.textPri,
+      boxShadow:`0 4px 20px rgba(0,0,0,0.12)`,
+      zIndex:9999,maxWidth:360,animation:"toastIn .2s ease"}}>
+      <span style={{color,fontWeight:700,marginRight:8}}>
+        {type==="error"?"✗":type==="warn"?"⚠":"✓"}
+      </span>{message}
+    </div>
+  );
+}
+
+// ── PID calculator ────────────────────────────────────────────────────────────
+const calcPID = hex => {
+  try {
+    const id=parseInt(hex,16)&0x3F;
+    const p0=(id^(id>>1)^(id>>2)^(id>>4))&1;
+    const p1=(~((id>>1)^(id>>3)^(id>>4)^(id>>5)))&1;
+    return `0x${((id|(p0<<6)|(p1<<7))>>>0).toString(16).toUpperCase().padStart(2,"0")}`;
+  } catch { return "—"; }
+};
+
+// ── LDF default data ──────────────────────────────────────────────────────────
+const defLDF = {
+  version:"2.1", speed:"19.2",
+  master:"BCM", masterTimeBase:"5", masterJitter:"0.1", slaves:"CRS",
+  frames:[
+    { name:"LeftStickWiperRequester", id:"0x16", publisher:"CRS", dlc:"2", scheduleDelay:"400",
+      signals:[{name:"WiperOp",startBit:"0",length:"4"},{name:"StickStatus",startBit:"4",length:"4"},{name:"AliveCtr",startBit:"8",length:"8"}] },
+    { name:"WiperFaultStatus", id:"0x17", publisher:"CRS", dlc:"2", scheduleDelay:"800",
+      signals:[{name:"FaultCode",startBit:"0",length:"8"},{name:"Reserved17",startBit:"8",length:"8"}] },
+  ],
+  nodeNad:"0x01", nodeProtocol:"2.1",
+};
+
+// ── DBC default data ──────────────────────────────────────────────────────────
+const defDBC = {
+  nodes:["BCM","WC","SIM"],
+  messages:[
+    { id:"512", name:"Wiper_Command",    dlc:"8", sender:"BCM", period:"400", sendType:"Cyclic",      comment:"BCM→WC 400ms CRC=XOR(B0,B1,B2)",
+      signals:[
+        {name:"WiperMode",       startBit:"0",  length:"4",  factor:"1",   offset:"0", min:"0", max:"15",     unit:"",    receivers:"WC,SIM",  comment:"0=OFF…7=REAR_WIPE", values:"0:OFF,1:TOUCH,2:SPEED1,3:SPEED2,4:AUTO,5:FRONT_WASH,6:REAR_WASH,7:REAR_WIPE"},
+        {name:"WiperSpeedLevel", startBit:"4",  length:"4",  factor:"1",   offset:"0", min:"0", max:"15",     unit:"",    receivers:"WC,SIM",  comment:"0=STOP…4=MAX",      values:"0:STOP,1:LOW,2:MED,3:HIGH,4:MAX"},
+        {name:"WashRequest",     startBit:"8",  length:"2",  factor:"1",   offset:"0", min:"0", max:"3",      unit:"",    receivers:"WC,SIM",  comment:"",                  values:"0:NONE,1:FRONT,2:REAR,3:BOTH"},
+        {name:"AliveCounter_TX", startBit:"16", length:"8",  factor:"1",   offset:"0", min:"0", max:"255",    unit:"",    receivers:"WC,SIM",  comment:"modulo 256",        values:""},
+        {name:"CRC_CMD",         startBit:"24", length:"8",  factor:"1",   offset:"0", min:"0", max:"255",    unit:"",    receivers:"WC,SIM",  comment:"XOR(B0,B1,B2)",     values:""},
+      ]},
+    { id:"513", name:"Wiper_Status",     dlc:"8", sender:"WC",  period:"400", sendType:"CyclicEvent", comment:"WC→BCM CRC=XOR(B0..B6)",
+      signals:[
+        {name:"CurrentMode",     startBit:"0",  length:"8",  factor:"1",   offset:"0", min:"0", max:"255",    unit:"",    receivers:"BCM,SIM", comment:"",                  values:""},
+        {name:"CurrentSpeed",    startBit:"8",  length:"8",  factor:"1",   offset:"0", min:"0", max:"255",    unit:"",    receivers:"BCM,SIM", comment:"",                  values:""},
+        {name:"BladePosition",   startBit:"16", length:"8",  factor:"1",   offset:"0", min:"0", max:"100",    unit:"%",   receivers:"BCM,SIM", comment:"0=repos",           values:""},
+        {name:"MotorCurrent",    startBit:"24", length:"16", factor:"0.1", offset:"0", min:"0", max:"6553.5", unit:"A",   receivers:"BCM,SIM", comment:"0.1A/bit",          values:""},
+        {name:"FaultStatus",     startBit:"40", length:"8",  factor:"1",   offset:"0", min:"0", max:"255",    unit:"",    receivers:"BCM,SIM", comment:"0=OK",              values:""},
+        {name:"AliveCounter_RX", startBit:"48", length:"8",  factor:"1",   offset:"0", min:"0", max:"255",    unit:"",    receivers:"BCM,SIM", comment:"modulo 256",        values:""},
+        {name:"CRC_STS",         startBit:"56", length:"8",  factor:"1",   offset:"0", min:"0", max:"255",    unit:"",    receivers:"BCM,SIM", comment:"XOR(B0..B6)",       values:""},
+      ]},
+    { id:"514", name:"Wiper_Ack",        dlc:"8", sender:"WC",  period:"0",   sendType:"Event",       comment:"WC→BCM event-based",
+      signals:[
+        {name:"AckCode",         startBit:"0",  length:"8",  factor:"1",   offset:"0", min:"0", max:"255",    unit:"",    receivers:"BCM,SIM", comment:"",                  values:""},
+        {name:"ErrorCode",       startBit:"8",  length:"8",  factor:"1",   offset:"0", min:"0", max:"255",    unit:"",    receivers:"BCM,SIM", comment:"0=none",            values:""},
+        {name:"AliveCounter_AK", startBit:"16", length:"8",  factor:"1",   offset:"0", min:"0", max:"255",    unit:"",    receivers:"BCM,SIM", comment:"",                  values:""},
+      ]},
+    { id:"768", name:"Vehicle_Status",   dlc:"8", sender:"SIM", period:"200", sendType:"Cyclic",      comment:"SIM→BCM 200ms",
+      signals:[
+        {name:"IgnitionStatus",  startBit:"0",  length:"8",  factor:"1",   offset:"0", min:"0", max:"2",      unit:"",    receivers:"BCM",     comment:"",                  values:"0:OFF,1:ON_ACC,2:START"},
+        {name:"ReverseGear",     startBit:"8",  length:"8",  factor:"1",   offset:"0", min:"0", max:"1",      unit:"",    receivers:"BCM",     comment:"",                  values:"0:DISENGAGED,1:ENGAGED"},
+        {name:"VehicleSpeed",    startBit:"16", length:"16", factor:"0.1", offset:"0", min:"0", max:"6553.5", unit:"km/h",receivers:"BCM",     comment:"0.1km/h per bit",   values:""},
+      ]},
+    { id:"769", name:"RainSensorData",   dlc:"8", sender:"SIM", period:"200", sendType:"Cyclic",      comment:"SIM→BCM 200ms",
+      signals:[
+        {name:"RainIntensity",   startBit:"0",  length:"8",  factor:"1",   offset:"0", min:"0", max:"255",    unit:"",    receivers:"BCM",     comment:"0=dry 255=heavy",   values:""},
+        {name:"SensorOK",        startBit:"8",  length:"8",  factor:"1",   offset:"0", min:"0", max:"1",      unit:"",    receivers:"BCM",     comment:"",                  values:"0:FAULT,1:OK"},
+      ]},
+  ],
+};
+
+// ── LDF components ─────────────────────────────────────────────────────────────
+function LDFSigRow({sig, idx, onChange, onRemove}) {
+  return (
+    <div style={{display:"grid",gridTemplateColumns:"1fr 80px 70px 34px",gap:5,alignItems:"end",marginBottom:5}}>
+      <div>
+        {idx===0 && <label style={lStyle}>Signal name</label>}
+        <input value={sig.name} onChange={e=>onChange("name",e.target.value)}
+          style={{...iStyle,fontSize:11,color:C.teal,borderColor:"rgba(0,122,204,0.35)"}}/>
+      </div>
+      <div>
+        {idx===0 && <label style={lStyle}>Start bit</label>}
+        <input type="number" min="0" max="63" value={sig.startBit} onChange={e=>onChange("startBit",e.target.value)}
+          style={{...iStyle,fontSize:11}}/>
+      </div>
+      <div>
+        {idx===0 && <label style={lStyle}>Length</label>}
+        <input type="number" min="1" max="64" value={sig.length} onChange={e=>onChange("length",e.target.value)}
+          style={{...iStyle,fontSize:11}}/>
+      </div>
+      <div style={{paddingBottom:1}}>{idx===0&&<div style={{height:16}}/>}
+        <IBtn icon="✕" onClick={onRemove}/>
+      </div>
+    </div>
+  );
+}
+
+function LDFFrameCard({frame, fi, onChange, onRemove}) {
+  const [open,setOpen] = useState(true);
+  const uSig=(si,f,v)=>onChange("signals",frame.signals.map((s,i)=>i===si?{...s,[f]:v}:s));
+  return (
+    <Card accent={C.teal} style={{marginBottom:8,borderLeft:`3px solid ${C.teal}`}}>
+      <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,
+        padding:"9px 12px",cursor:"pointer",
+        background:open?C.tealLight:"transparent",
+        borderRadius:open?"6px 6px 0 0":6}}>
+        <span style={{color:C.teal,fontSize:11}}>{open?"▾":"▸"}</span>
+        <span style={{fontFamily:C.mono,fontSize:11,color:C.textPri,fontWeight:700,flex:1}}>
+          {frame.name||`frame_${fi}`}
+        </span>
+        <Pill color={C.teal}>{frame.id}</Pill>
+        <Pill color={C.accent}>PID {calcPID(frame.id)}</Pill>
+        <Pill color={C.textDim}>DLC {frame.dlc}</Pill>
+        <span style={{fontFamily:C.mono,fontSize:9,color:C.textDim}}>{frame.scheduleDelay} ms</span>
+        <IBtn icon="✕" onClick={e=>{e.stopPropagation();onRemove();}}/>
+      </div>
+      {open && (
+        <div style={{padding:"10px 14px",borderTop:`1px solid rgba(0,122,204,0.12)`}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 80px 70px 80px",gap:7,marginBottom:10}}>
+            <Field label="Frame name"     value={frame.name}          onChange={v=>onChange("name",v)}          ac={C.teal}/>
+            <Field label="Publisher"      value={frame.publisher}     onChange={v=>onChange("publisher",v)}      ac={C.teal}/>
+            <Field label="Frame ID"       value={frame.id}            onChange={v=>onChange("id",v)}            ac={C.teal}/>
+            <Field label="DLC"            value={frame.dlc}           onChange={v=>onChange("dlc",v)}           type="number" min="1" max="8"/>
+            <Field label="Schedule (ms)"  value={frame.scheduleDelay} onChange={v=>onChange("scheduleDelay",v)} type="number" min="1"/>
+          </div>
+          <SecHdr label="Signals" accent={C.teal} badge={frame.signals.length}/>
+          {frame.signals.map((s,si)=>(
+            <LDFSigRow key={si} sig={s} idx={si}
+              onChange={(f,v)=>uSig(si,f,v)}
+              onRemove={()=>onChange("signals",frame.signals.filter((_,i)=>i!==si))}/>
+          ))}
+          <Btn variant="ghost" color={C.teal}
+            onClick={()=>onChange("signals",[...frame.signals,{name:"NewSig",startBit:"0",length:"8"}])}
+            style={{fontSize:10,padding:"4px 10px",marginTop:3}}>
+            + Add signal
+          </Btn>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function LDFEditor({ldf, setLdf, onGenerate}) {
+  const uF=(fi,f,v)=>setLdf(l=>({...l,frames:l.frames.map((fr,i)=>i===fi?{...fr,[f]:v}:fr)}));
+  return (
+    <div>
+      <SecHdr label="Bus configuration"/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+        <Field label="LIN protocol version" value={ldf.version} onChange={v=>setLdf(l=>({...l,version:v}))}/>
+        <Field label="Bus speed (kbps)"     value={ldf.speed}   onChange={v=>setLdf(l=>({...l,speed:v}))} type="number" min="1"/>
+      </div>
+      <SecHdr label="Network topology"/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 80px 80px",gap:8,marginBottom:14}}>
+        <Field label="Master node"    value={ldf.master}         onChange={v=>setLdf(l=>({...l,master:v}))}/>
+        <Field label="Slave node(s)"  value={ldf.slaves}         onChange={v=>setLdf(l=>({...l,slaves:v}))}/>
+        <Field label="Time base (ms)" value={ldf.masterTimeBase} onChange={v=>setLdf(l=>({...l,masterTimeBase:v}))} type="number"/>
+        <Field label="Jitter (ms)"    value={ldf.masterJitter}   onChange={v=>setLdf(l=>({...l,masterJitter:v}))} type="number" step="0.1"/>
+      </div>
+      <SecHdr label="Slave node attributes"/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+        <Field label="Configured NAD" value={ldf.nodeNad}      onChange={v=>setLdf(l=>({...l,nodeNad:v}))}/>
+        <Field label="LIN protocol"   value={ldf.nodeProtocol} onChange={v=>setLdf(l=>({...l,nodeProtocol:v}))}/>
+      </div>
+      <SecHdr label="Frames & schedule" accent={C.teal} badge={ldf.frames.length}/>
+      {ldf.frames.map((f,fi)=>(
+        <LDFFrameCard key={fi} frame={f} fi={fi}
+          onChange={(field,val)=>uF(fi,field,val)}
+          onRemove={()=>setLdf(l=>({...l,frames:l.frames.filter((_,i)=>i!==fi)}))}/>
+      ))}
+      <div style={{display:"flex",gap:8,marginTop:10}}>
+        <Btn variant="ghost" color={C.teal}
+          onClick={()=>setLdf(l=>({...l,frames:[...l.frames,
+            {name:"NewFrame",id:"0x18",publisher:"CRS",dlc:"2",scheduleDelay:"500",
+             signals:[{name:"Sig1",startBit:"0",length:"8"}]}]}))}>
+          + Add frame
+        </Btn>
+        <Btn color={C.accent} bg={C.accentBr} onClick={onGenerate}>Generate LDF file</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── DBC components ─────────────────────────────────────────────────────────────
+function DBCSigRow({sig, idx, onChange, onRemove}) {
+  const [exp,setExp] = useState(false);
+  return (
+    <div style={{background:exp?C.amberLight:C.surface,
+      border:`1px solid ${exp?"rgba(192,112,0,0.3)":C.border}`,
+      borderRadius:4,marginBottom:4,overflow:"hidden"}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 65px 60px 60px 50px 82px auto",
+        gap:5,padding:"6px 8px",alignItems:"center"}}>
+        <input value={sig.name} onChange={e=>onChange("name",e.target.value)}
+          style={{...iStyle,color:C.amber,fontSize:11,padding:"3px 6px",
+            borderColor:"rgba(192,112,0,0.3)"}}/>
+        <input type="number" value={sig.startBit} onChange={e=>onChange("startBit",e.target.value)}
+          style={{...iStyle,fontSize:11,padding:"3px 6px"}}/>
+        <input type="number" value={sig.length} onChange={e=>onChange("length",e.target.value)}
+          style={{...iStyle,fontSize:11,padding:"3px 6px"}}/>
+        <input type="number" step="any" value={sig.factor} onChange={e=>onChange("factor",e.target.value)}
+          style={{...iStyle,fontSize:11,padding:"3px 6px"}}/>
+        <input value={sig.unit} onChange={e=>onChange("unit",e.target.value)}
+          style={{...iStyle,fontSize:11,padding:"3px 6px"}}/>
+        <input value={sig.receivers} onChange={e=>onChange("receivers",e.target.value)}
+          style={{...iStyle,fontSize:11,padding:"3px 6px"}}/>
+        <div style={{display:"flex",gap:3}}>
+          <IBtn icon={exp?"▲":"▼"} onClick={()=>setExp(o=>!o)} color={C.textDim}/>
+          <IBtn icon="✕" onClick={onRemove}/>
+        </div>
+      </div>
+      {exp && (
+        <div style={{padding:"6px 8px 10px",borderTop:`1px solid rgba(192,112,0,0.15)`}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:7,marginBottom:6}}>
+            <Field label="Offset"  value={sig.offset}  onChange={v=>onChange("offset",v)}  type="number" step="any" ac={C.amber}/>
+            <Field label="Min"     value={sig.min}     onChange={v=>onChange("min",v)}     type="number" step="any" ac={C.amber}/>
+            <Field label="Max"     value={sig.max}     onChange={v=>onChange("max",v)}     type="number" step="any" ac={C.amber}/>
+            <Field label="Comment" value={sig.comment} onChange={v=>onChange("comment",v)} mono={false}  ac={C.amber}/>
+          </div>
+          <div>
+            <label style={{...lStyle,color:C.amber}}>Value table
+              <span style={{fontWeight:400,letterSpacing:0,textTransform:"none",color:C.textDim}}>&nbsp;(0:OFF, 1:ON, …)</span>
+            </label>
+            <input value={sig.values} onChange={e=>onChange("values",e.target.value)}
+              placeholder="0:OFF,1:ON,2:FAULT"
+              style={{...iStyle,fontSize:11,color:C.amber,borderColor:"rgba(192,112,0,0.3)",width:"100%"}}/>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DBCMsgCard({msg, mi, onChange, onRemove}) {
+  const [open,setOpen] = useState(true);
+  const uS=(si,f,v)=>onChange("signals",msg.signals.map((s,i)=>i===si?{...s,[f]:v}:s));
+  const idHex=`0x${(parseInt(msg.id)||0).toString(16).toUpperCase().padStart(3,"0")}`;
+  return (
+    <Card style={{borderLeft:`3px solid ${C.amber}`,marginBottom:8}}>
+      <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,
+        padding:"9px 12px",cursor:"pointer",
+        background:open?C.amberLight:"transparent",
+        borderRadius:open?"6px 6px 0 0":6}}>
+        <span style={{color:C.amber,fontSize:11}}>{open?"▾":"▸"}</span>
+        <span style={{fontFamily:C.mono,fontSize:11,color:C.textPri,fontWeight:700,flex:1}}>
+          {msg.name||`msg_${mi}`}
+        </span>
+        <Pill color={C.amber}>{idHex}</Pill>
+        <Pill color={C.textSec}>DLC {msg.dlc}</Pill>
+        <Pill color={C.accent}>{msg.sender}</Pill>
+        <span style={{fontFamily:C.mono,fontSize:9,color:C.textDim}}>
+          {msg.period>0?`${msg.period} ms`:"event"}
+        </span>
+        <IBtn icon="✕" onClick={e=>{e.stopPropagation();onRemove();}}/>
+      </div>
+      {open && (
+        <div style={{padding:"10px 14px",borderTop:`1px solid rgba(192,112,0,0.12)`}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 80px 50px 1fr 75px 115px",gap:7,marginBottom:8}}>
+            <Field label="Message name" value={msg.name}     onChange={v=>onChange("name",v)}     ac={C.amber}/>
+            <Field label="ID (decimal)" value={msg.id}       onChange={v=>onChange("id",v)}       type="number" min="0" ac={C.amber}/>
+            <Field label="DLC"          value={msg.dlc}      onChange={v=>onChange("dlc",v)}      type="number" min="1" max="8"/>
+            <Field label="Sender"       value={msg.sender}   onChange={v=>onChange("sender",v)}   mono={false}  ac={C.amber}/>
+            <Field label="Period (ms)"  value={msg.period}   onChange={v=>onChange("period",v)}   type="number" min="0"/>
+            <Sel   label="Send type"    value={msg.sendType} onChange={v=>onChange("sendType",v)}
+              options={["Cyclic","CyclicEvent","Event","NoMsgSendType"]} ac={C.amber}/>
+          </div>
+          <Field label="Comment" value={msg.comment} onChange={v=>onChange("comment",v)} mono={false} ac={C.amber}/>
+          <SecHdr label="Signals" accent={C.amber} badge={msg.signals.length}/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 65px 60px 60px 50px 82px auto",
+            gap:5,padding:"0 8px",marginBottom:4}}>
+            {["Name","Start bit","Length","Factor","Unit","Receivers",""].map((h,i)=>(
+              <span key={i} style={{...lStyle,marginBottom:0,color:"rgba(192,112,0,0.65)"}}>{h}</span>
+            ))}
+          </div>
+          {msg.signals.map((s,si)=>(
+            <DBCSigRow key={si} sig={s} idx={si}
+              onChange={(f,v)=>uS(si,f,v)}
+              onRemove={()=>onChange("signals",msg.signals.filter((_,i)=>i!==si))}/>
+          ))}
+          <Btn variant="ghost" color={C.amber}
+            onClick={()=>onChange("signals",[...msg.signals,
+              {name:"NewSig",startBit:"0",length:"8",factor:"1",offset:"0",min:"0",max:"255",unit:"",receivers:"",comment:"",values:""}])}
+            style={{fontSize:10,padding:"4px 10px",marginTop:4}}>
+            + Add signal
+          </Btn>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function DBCEditor({dbc, setDbc, onGenerate}) {
+  const uM=(mi,f,v)=>setDbc(d=>({...d,messages:d.messages.map((m,i)=>i===mi?{...m,[f]:v}:m)}));
+  return (
+    <div>
+      <SecHdr label="Network nodes"/>
+      <div style={{marginBottom:14}}>
+        <Field label="Nodes (space-separated)" value={dbc.nodes.join(" ")}
+          onChange={v=>setDbc(d=>({...d,nodes:v.split(/\s+/).filter(Boolean)}))}/>
+        <div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:4}}>
+          {dbc.nodes.map(n=><Pill key={n} color={C.accent}>{n}</Pill>)}
+        </div>
+      </div>
+      <SecHdr label="Messages" accent={C.amber} badge={dbc.messages.length}/>
+      {dbc.messages.map((m,mi)=>(
+        <DBCMsgCard key={mi} msg={m} mi={mi}
+          onChange={(f,v)=>uM(mi,f,v)}
+          onRemove={()=>setDbc(d=>({...d,messages:d.messages.filter((_,i)=>i!==mi)}))}/>
+      ))}
+      <div style={{display:"flex",gap:8,marginTop:10}}>
+        <Btn variant="ghost" color={C.amber}
+          onClick={()=>setDbc(d=>({...d,messages:[...d.messages,
+            {id:String(900+d.messages.length),name:"New_Message",dlc:"8",sender:"BCM",
+             period:"200",sendType:"Cyclic",comment:"",
+             signals:[{name:"Signal1",startBit:"0",length:"8",factor:"1",offset:"0",min:"0",max:"255",unit:"",receivers:"",comment:"",values:""}]}]}))}>
+          + Add message
+        </Btn>
+        <Btn color={C.amber} onClick={onGenerate}>Generate DBC file</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Generators ────────────────────────────────────────────────────────────────
+function genLDF(ldf) {
+  const L=[];
+  L.push("LIN_description_file;","");
+  L.push(`LIN_protocol_version = "${ldf.version}";`,`LIN_language_version = "${ldf.version}";`,`LIN_speed = ${ldf.speed} kbps;`,"");
+  L.push("Nodes {",`  Master: ${ldf.master}, ${ldf.masterTimeBase} ms, ${ldf.masterJitter} ms;`,`  Slaves: ${ldf.slaves};`,"}","");
+  const sigs=[]; ldf.frames.forEach(f=>f.signals.forEach(s=>sigs.push({...s,pub:f.publisher})));
+  L.push("Signals {"); sigs.forEach(s=>L.push(`  ${s.name}: ${s.length}, 0x00, ${s.pub}, ${ldf.master};`)); L.push("}","");
+  L.push("Frames {");
+  ldf.frames.forEach(f=>{L.push(`  ${f.name}: ${f.id}, ${f.publisher}, ${f.dlc} {`);f.signals.forEach(s=>L.push(`    ${s.name}, ${s.startBit};`));L.push("  }");});
+  L.push("}","");
+  L.push("Node_attributes {",`  ${ldf.slaves} {`,`    LIN_protocol = "${ldf.nodeProtocol}";`,`    configured_NAD = ${ldf.nodeNad};`,`    initial_NAD    = ${ldf.nodeNad};`,"    product_id     = 0x0001, 0x0001, 0x01;","  }","}","");
+  L.push("Schedule_tables {","  NormalSchedule {");
+  ldf.frames.forEach(f=>L.push(`    ${f.name}  delay ${f.scheduleDelay} ms;`));
+  L.push("  }","}");
+  return L.join("\n");
+}
+
+function genDBC(dbc) {
+  const L=[];
+  L.push('VERSION ""',"","NS_ :","    NS_DESC_","    CM_","    BA_DEF_","    BA_","    VAL_","","BS_:","");
+  L.push(`BU_: ${dbc.nodes.join(" ")}`,"");
+  dbc.messages.forEach(m=>{
+    L.push(`BO_ ${m.id} ${m.name}: ${m.dlc} ${m.sender}`);
+    m.signals.forEach(s=>{
+      const r=s.receivers||dbc.nodes.filter(n=>n!==m.sender).join(",");
+      L.push(` SG_ ${s.name} : ${s.startBit}|${s.length}@1+ (${s.factor},${s.offset}) [${s.min}|${s.max}] "${s.unit}" ${r}`);
+    });
+    L.push("");
+  });
+  dbc.messages.forEach(m=>{
+    if(m.comment)L.push(`CM_ BO_ ${m.id} "${m.comment}";`);
+    m.signals.forEach(s=>{if(s.comment)L.push(`CM_ SG_ ${m.id} ${s.name} "${s.comment}";`);});
+  });
+  L.push("");
+  L.push('BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;','BA_DEF_ BO_  "GenMsgSendType"  STRING;','BA_DEF_DEF_ "GenMsgCycleTime" 0;','BA_DEF_DEF_ "GenMsgSendType"  "Cyclic";',"");
+  dbc.messages.forEach(m=>L.push(`BA_ "GenMsgCycleTime" BO_ ${m.id}  ${m.period};`));
+  dbc.messages.forEach(m=>L.push(`BA_ "GenMsgSendType" BO_ ${m.id}  "${m.sendType}";`));
+  L.push("");
+  dbc.messages.forEach(m=>m.signals.forEach(s=>{
+    if(!s.values.trim())return;
+    const entries=s.values.split(",").map(e=>{const[k,v]=e.split(":").map(x=>x.trim());return`  ${k} "${v}"`;}).join("\n");
+    L.push(`VAL_ ${m.id} ${s.name}\n${entries} ;`);
+  }));
+  return L.join("\n");
+}
+
+// ── Preview pane — lecture seule, sans boutons (actions dans la topbar) ─────────
+function Preview({content, ac=C.accent}) {
+  return (
+    <div style={{display:"flex",flexDirection:"column",height:"100%",
+      background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,overflow:"hidden"}}>
+      <div style={{padding:"6px 12px",background:C.panel,borderBottom:`1px solid ${C.border}`}}>
+        <span style={{fontFamily:C.mono,fontSize:10,color:C.textDim}}>PREVIEW</span>
+      </div>
+      <pre style={{flex:1,margin:0,overflowY:"auto",padding:"12px 14px",
+        fontFamily:C.mono,fontSize:11,lineHeight:1.75,
+        color:C.textPri,background:"transparent",
+        whiteSpace:"pre-wrap",wordBreak:"break-word"}}>
+        {content}
+      </pre>
+    </div>
+  );
+}
+
+// ── Root ───────────────────────────────────────────────────────────────────────
+function App() {
+  const [tab,setTab]           = useState("ldf");
+  const [ldf,setLdf]           = useState(defLDF);
+  const [dbc,setDbc]           = useState(defDBC);
+  const [ldfPrev,setLdfPrev]   = useState("");
+  const [dbcPrev,setDbcPrev]   = useState("");
+  const [showPrev,setShowPrev] = useState(false);
+  const [toast,setToast]       = useState({message:"",type:"ok"});
+
+  const notify=(m,t="ok")=>{setToast({message:m,type:t});setTimeout(()=>setToast({message:"",type:"ok"}),2800);};
+  const doLDF=()=>{try{setLdfPrev(genLDF(ldf));setShowPrev(true);notify("LDF file generated successfully");}catch(e){notify(`LDF error: ${e.message}`,"error");}};
+  const doDBC=()=>{try{setDbcPrev(genDBC(dbc));setShowPrev(true);notify("DBC file generated successfully");}catch(e){notify(`DBC error: ${e.message}`,"error");}};
+
+  const ac = tab==="ldf" ? C.teal : C.amber;
+  const prev = tab==="ldf" ? ldfPrev : dbcPrev;
+  const fname = tab==="ldf" ? "wiperwash.ldf" : "wiperwash.dbc";
+
+  // ── Copy & Download — délégués au bridge Python via window.__pyAction__ ──────
+  // Dans QWebEngineView, navigator.clipboard et createObjectURL sont bloqués.
+  // Python injecte window.__pyAction__(action, filename, content) via runJavaScript.
+  // En mode navigateur normal (test standalone), fallback sur les API web standard.
+  const [copied, setCopied] = useState(false);
+
+  const doCopy = () => {
+    if (!prev) { notify("Generate the file first", "warn"); return; }
+    if (typeof window.__pyAction__ === "function") {
+      // Bridge Python : Python copie via QApplication.clipboard()
+      window.__pyAction__("copy", fname, prev);
+      setCopied(true); setTimeout(()=>setCopied(false),1500);
+      notify("Copied to clipboard");
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(prev)
+        .then(() => { setCopied(true); setTimeout(()=>setCopied(false),1500); notify("Copied to clipboard"); })
+        .catch(() => notify("Copy failed", "error"));
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = prev; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); document.body.removeChild(ta);
+      setCopied(true); setTimeout(()=>setCopied(false),1500);
+      notify("Copied to clipboard");
+    }
+  };
+
+  const doDownload = () => {
+    if (!prev) { notify("Generate the file first", "warn"); return; }
+    if (typeof window.__pyAction__ === "function") {
+      // Bridge Python : Python écrit le fichier + dialog de sauvegarde
+      window.__pyAction__("download", fname, prev);
+      notify(`${fname} — saved via platform`);
+    } else {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([prev], {type:"text/plain"}));
+      a.download = fname; a.click();
+      notify(`${fname} downloaded`);
+    }
+  };
+
+  const TabBtn=({id,label,color,badge})=>{
+    const active=tab===id;
+    return (
+      <button onClick={()=>setTab(id)} style={{
+        background:"transparent", border:"none",
+        borderBottom:`3px solid ${active?color:"transparent"}`,
+        color:active?color:C.textDim,
+        fontFamily:C.sans,fontSize:11,fontWeight:active?700:400,
+        letterSpacing:"0.04em", padding:"10px 20px",
+        cursor:"pointer",transition:"all .15s",
+        display:"flex",alignItems:"center",gap:8,
+      }}>
+        {label}
+        <span style={{background:active?`${color}18`:C.panel,
+          border:`1px solid ${active?color+"50":C.border}`,
+          borderRadius:10,padding:"1px 7px",
+          fontSize:9,fontFamily:C.mono,
+          color:active?color:C.textDim}}>{badge}</span>
+      </button>
+    );
+  };
+
+  return (
+    <div style={{background:C.bg,minHeight:"100vh",fontFamily:C.sans,color:C.textPri}}>
+
+      {/* Top bar */}
+      <div style={{height:52,background:C.titlebar,
+        display:"flex",alignItems:"center",gap:16,padding:"0 20px",
+        boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
+
+        {/* Logo */}
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <svg width="30" height="30" viewBox="0 0 30 30">
+            <rect width="30" height="30" rx="5" fill="rgba(141,198,63,0.2)" stroke={C.accentBr} strokeWidth="1.2"/>
+            <line x1="4" y1="15" x2="11" y2="15" stroke={C.accentBr} strokeWidth="1.8"/>
+            <line x1="19" y1="15" x2="26" y2="15" stroke={C.accentBr} strokeWidth="1.8"/>
+            <circle cx="15" cy="15" r="4.5" fill="none" stroke={C.accentBr} strokeWidth="1.8"/>
+            <circle cx="15" cy="15" r="1.8" fill={C.accentBr}/>
+            <line x1="15" y1="4" x2="15" y2="10.5" stroke="#00E5FF" strokeWidth="1.8"/>
+            <line x1="15" y1="19.5" x2="15" y2="26" stroke="#00E5FF" strokeWidth="1.8"/>
+          </svg>
+          <div>
+            <div style={{fontFamily:C.mono,fontSize:13,fontWeight:700,color:C.accentBr,letterSpacing:"0.08em"}}>
+              BusConfig
+            </div>
+            <div style={{fontFamily:C.mono,fontSize:8,color:"rgba(141,198,63,0.55)",letterSpacing:"0.08em"}}>
+              LDF · DBC · WipeWash HIL
+            </div>
+          </div>
+        </div>
+
+        <div style={{flex:1}}/>
+
+        {/* Status dots */}
+        <div style={{display:"flex",gap:16,alignItems:"center"}}>
+          {[{c:C.teal,   label:`LIN ${ldf.speed} kbps`, delay:2},
+            {c:C.amber,  label:`CAN ${dbc.messages.length} msgs`, delay:2.4},
+            {c:C.accentBr,label:dbc.nodes.join(" · "), delay:1.8},
+          ].map(({c,label,delay},i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:5}}>
+              <div style={{width:6,height:6,borderRadius:"50%",background:c,
+                animation:`pulseDot ${delay}s infinite`}}/>
+              <span style={{fontFamily:C.mono,fontSize:9,color:"rgba(255,255,255,0.55)",letterSpacing:"0.06em"}}>{label}</span>
+            </div>
+          ))}
+        </div>
+
+        <div style={{width:1,height:22,background:"rgba(255,255,255,0.15)"}}/>
+
+        <button onClick={()=>setShowPrev(o=>!o)} style={{
+          background:showPrev?`${ac}30`:"rgba(255,255,255,0.08)",
+          border:`1px solid ${showPrev?ac+"70":"rgba(255,255,255,0.2)"}`,
+          borderRadius:4,padding:"5px 12px",
+          fontFamily:C.sans,fontSize:10,fontWeight:600,
+          color:showPrev?ac:"rgba(255,255,255,0.7)",
+          cursor:"pointer",transition:"all .15s"}}>
+          {showPrev?"◀ Hide preview":"▶ Show preview"}
+        </button>
+
+        <div style={{width:1,height:22,background:"rgba(255,255,255,0.15)"}}/>
+
+        {/* Copy & Download — toujours visibles, indépendants du preview ─── */}
+        <button onClick={doCopy} title={prev?"Copy generated file to clipboard":"Generate file first"} style={{
+          background:prev?"rgba(255,255,255,0.08)":"transparent",
+          border:`1px solid ${prev?"rgba(255,255,255,0.25)":"rgba(255,255,255,0.1)"}`,
+          borderRadius:4,padding:"5px 12px",
+          fontFamily:C.sans,fontSize:10,fontWeight:600,
+          color:prev?(copied?"#8DC63F":"rgba(255,255,255,0.8)"):"rgba(255,255,255,0.25)",
+          cursor:prev?"pointer":"default",transition:"all .15s"}}>
+          {copied?"✓ Copied":"⎘ Copy"}
+        </button>
+
+        <button onClick={doDownload} title={prev?`Download ${fname}`:"Generate file first"} style={{
+          background:prev?`${ac}CC`:"rgba(255,255,255,0.05)",
+          border:"none",
+          borderRadius:4,padding:"5px 14px",
+          fontFamily:C.sans,fontSize:10,fontWeight:700,
+          color:prev?"#0F1A0A":"rgba(255,255,255,0.2)",
+          cursor:prev?"pointer":"default",
+          boxShadow:prev?`0 1px 6px ${ac}55`:"none",
+          transition:"all .15s"}}>
+          ↓ Download {fname}
+        </button>
+      </div>
+
+      {/* Layout */}
+      <div style={{display:"grid",gridTemplateColumns:showPrev?"1fr 440px":"1fr",
+        height:"calc(100vh - 52px)"}}>
+
+        {/* Editor */}
+        <div style={{display:"flex",flexDirection:"column",overflow:"hidden"}}>
+          {/* Tab bar */}
+          <div style={{display:"flex",alignItems:"flex-end",
+            background:C.surface,borderBottom:`1px solid ${C.border}`,
+            padding:"0 20px",boxShadow:"0 1px 0 rgba(141,198,63,0.2)"}}>
+            <TabBtn id="ldf" label="LIN Description File" color={C.teal}  badge={`${ldf.frames.length} frames`}/>
+            <TabBtn id="dbc" label="CAN Database"         color={C.amber} badge={`${dbc.messages.length} msgs`}/>
+          </div>
+
+          {/* Form */}
+          <div style={{flex:1,overflowY:"auto",padding:"20px 24px"}}>
+            {tab==="ldf"
+              ? <LDFEditor ldf={ldf} setLdf={setLdf} onGenerate={doLDF}/>
+              : <DBCEditor dbc={dbc} setDbc={setDbc} onGenerate={doDBC}/>}
+          </div>
+        </div>
+
+        {/* Preview */}
+        {showPrev && (
+          <div style={{borderLeft:`1px solid ${ac}30`,padding:14,overflow:"hidden",
+            display:"flex",flexDirection:"column",background:C.panel}}>
+            {prev
+              ? <Preview content={prev} ac={ac}/>
+              : <div style={{display:"flex",flexDirection:"column",alignItems:"center",
+                  justifyContent:"center",height:"100%",gap:14}}>
+                  <div style={{width:48,height:48,borderRadius:8,background:C.surface,
+                    border:`1px solid ${C.border}`,display:"flex",alignItems:"center",
+                    justifyContent:"center",fontSize:24}}>📄</div>
+                  <p style={{fontFamily:C.sans,fontSize:12,color:C.textDim,textAlign:"center",lineHeight:1.8}}>
+                    Click "Generate"<br/>to preview the output
+                  </p>
+                  <Btn color={ac} bg={ac} onClick={tab==="ldf"?doLDF:doDBC}>
+                    Generate {tab==="ldf"?"LDF":"DBC"} file
+                  </Btn>
+                </div>}
+          </div>
+        )}
+      </div>
+
+      <Toast {...toast}/>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
