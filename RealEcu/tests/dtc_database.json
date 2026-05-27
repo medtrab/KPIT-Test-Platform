@@ -1,0 +1,149 @@
+{
+    "dtc_status_availability_mask": "0xFF",
+    "dtcs": {
+        "B2001": {
+            "bytes": [
+                178,
+                32,
+                1
+            ],
+            "description": "Front Motor Blocked - Overcurrent > threshold 300ms",
+            "category": "electrical",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2002": {
+            "bytes": [
+                178,
+                32,
+                2
+            ],
+            "description": "Rear Motor Blocked - Overcurrent > threshold 300ms",
+            "category": "electrical",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2003": {
+            "bytes": [
+                178,
+                32,
+                3
+            ],
+            "description": "Pump Overcurrent - Current > threshold",
+            "category": "electrical",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2004": {
+            "bytes": [
+                178,
+                32,
+                4
+            ],
+            "description": "LIN Timeout CRS - No valid frame for 100ms",
+            "category": "communication",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2005": {
+            "bytes": [
+                178,
+                32,
+                5
+            ],
+            "description": "CAN Timeout WC - No Wiper_Status for 100ms",
+            "category": "communication",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2006": {
+            "bytes": [
+                178,
+                32,
+                6
+            ],
+            "description": "Blade Position Implausible - No movement detected",
+            "category": "functional",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2007": {
+            "bytes": [
+                178,
+                32,
+                7
+            ],
+            "description": "Rain Sensor Signal Fault - Signal out of range",
+            "category": "signal_fault",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2008": {
+            "bytes": [
+                178,
+                32,
+                8
+            ],
+            "description": "Pump Runtime Exceeded - Active more than 5 seconds",
+            "category": "protection",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        },
+        "B2009": {
+            "bytes": [
+                178,
+                32,
+                9
+            ],
+            "description": "Rest Contact Failure - Signal stuck",
+            "category": "electrical",
+            "storage": "confirmed",
+            "status": 0,
+            "occurrence_count": 0,
+            "first_occurrence": null,
+            "last_occurrence": null,
+            "snapshot": {},
+            "snapshot_records": []
+        }
+    }
+}
